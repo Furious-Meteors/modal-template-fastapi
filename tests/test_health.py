@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import os
 
 
 def test_health_returns_200(client: TestClient):
@@ -13,7 +14,8 @@ def test_health_status_is_healthy(client: TestClient):
 
 def test_health_service_name(client: TestClient):
     data = client.get("/api/v1/health").json()
-    assert data["service_name"] == "modal-template-fastapi"
+    expected_service_name = f"modal-template-fastapi-{os.environ.get('MODAL_ENV', 'dev')}"
+    assert data["service_name"] == expected_service_name
 
 
 def test_health_version(client: TestClient):

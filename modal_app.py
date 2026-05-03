@@ -17,6 +17,7 @@ app = modal.App(APP_NAME)
 # SETTING MODAL PROJECT
 @app.function(**build_fastapi_config(env_config))
 @modal.asgi_app()
+@modal.concurrent(max_inputs=env_config.max_concurrent_requests)
 def fastapi_app():
     from src.main import app as fastapi_app
     return fastapi_app
@@ -25,4 +26,4 @@ def fastapi_app():
 def main():
     from src.main import app as fastapi_app
     from uvicorn import run
-    run(fastapi_app, host="0.0.0.0", port=8000)
+    run(fastapi_app, host=env_config.server_host, port=env_config.server_port)
