@@ -112,7 +112,7 @@ def build_fastapi_config(env: EnvConfig) -> dict:
         "cpu": env.cpu_core_count,
         "memory": env.ram_memory_mib,
         "timeout": env.server_hard_timeout_seconds,
-        "secrets": env.secrets,
+        "secrets": env.secrets + [modal.Secret.from_dict({"MODAL_ENV": env.env_name})],
         "volumes": env.volumes,
         "min_containers": env.min_containers,
     }
