@@ -1,5 +1,7 @@
 import os
+import sys
 import time
+from types import SimpleNamespace
 
 # Must be set before any src imports so auth._get_secret_key() resolves
 os.environ.setdefault("JWT_SECRET", "test-secret-key-for-pytest-at-least-32-bytes")
@@ -7,6 +9,43 @@ os.environ.setdefault("JWT_SECRET", "test-secret-key-for-pytest-at-least-32-byte
 import jwt
 import pytest
 from fastapi.testclient import TestClient
+
+# Provide a lightweight modal stub for local test runs where modal is not installed.
+if "modal" not in sys.modules:
+    class _DummyImage:
+        def apt_install(self, *args, **kwargs):
+            return self
+
+        def uv_pip_install(self, *args, **kwargs):
+            return self
+
+        def add_local_dir(self, *args, **kwargs):
+            return self
+
+    class _DummyImageFactory:
+        @staticmethod
+        def debian_slim(*args, **kwargs):
+            return _DummyImage()
+
+    class _DummyVolume:
+        @staticmethod
+        def from_name(*args, **kwargs):
+            return _DummyVolume()
+
+    class _DummySecret:
+        @staticmethod
+        def from_name(*args, **kwargs):
+            return {}
+
+        @staticmethod
+        def from_dict(*args, **kwargs):
+            return {}
+
+    sys.modules["modal"] = SimpleNamespace(
+        Image=_DummyImageFactory,
+        Volume=_DummyVolume,
+        Secret=_DummySecret,
+    )
 
 from src.main import app
 from src.api import handler
