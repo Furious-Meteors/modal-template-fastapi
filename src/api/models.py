@@ -67,6 +67,14 @@ class HealthCheckResponse(BaseResponse):
         json_schema_extra={'example': {"total": 6, "healthy": 6, "unhealthy": 0}}
     )
 
+# --- Auth Models ---
+
+class TokenPayload(BaseModel):
+    """Decoded JWT token payload."""
+    sub: str = Field(..., description="Subject — typically a user ID or email")
+    exp: int = Field(..., description="Expiry timestamp (Unix epoch)")
+    iat: Optional[int] = Field(default=None, description="Issued-at timestamp (Unix epoch)")
+
 # --- File Upload Models ---
 
 class FileUploadRequest(BaseModel):
