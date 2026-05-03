@@ -20,3 +20,9 @@ app = modal.App(APP_NAME)
 def fastapi_app():
     from src.main import app as fastapi_app
     return fastapi_app
+
+@app.local_entrypoint()
+def main():
+    from src.main import app as fastapi_app
+    from uvicorn import run
+    run(fastapi_app, host="0.0.0.0", port=8000)
