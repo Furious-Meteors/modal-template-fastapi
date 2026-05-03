@@ -9,7 +9,7 @@ on:
       - "mkdocs.yml"
       - "swagger.yaml"
       - "src/**"
-      - "requirements-docs.txt"
+      - ".github/requirements/docs.txt"
 
   workflow_dispatch: # manual trigger from the Actions UI
 
@@ -35,7 +35,7 @@ jobs:
       - name: Install documentation dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-docs.txt
+          pip install -r .github/requirements/docs.txt
 
       - name: Copy swagger.yaml into docs/
         run: cp swagger.yaml docs/swagger.yaml
