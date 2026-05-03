@@ -59,7 +59,7 @@ modal-template-fastapi/
 # 1. Clone and install test dependencies
 git clone https://github.com/your-org/modal-template-fastapi.git
 cd modal-template-fastapi
-pip install -r requirements-test.txt
+pip install -r .github/requirements/test.txt
 
 # 2. Run the test suite
 pytest tests/ -v

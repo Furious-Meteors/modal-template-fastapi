@@ -101,7 +101,7 @@ git clone https://github.com/your-org/modal-template-fastapi.git
 cd modal-template-fastapi
 
 # Install test dependencies
-pip install -r requirements-test.txt
+pip install -r .github/requirements/test.txt
 
 # Authenticate with Modal (first time only)
 modal setup

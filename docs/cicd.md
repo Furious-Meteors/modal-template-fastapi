@@ -69,7 +69,7 @@ steps:
     with:
       python-version: "3.11"
   - name: Install dependencies
-    run: pip install -r requirements-test.txt
+    run: pip install -r .github/requirements/test.txt
   - name: Run tests
     run: python -m pytest tests/ -v --tb=short
 ```
@@ -182,7 +182,7 @@ Builds this documentation site and publishes it to GitHub Pages on every relevan
 
 1. Checks out the repository
 2. Copies `swagger.yaml` to `docs/swagger.yaml` (for the Swagger UI embed)
-3. Installs `requirements-docs.txt`
+3. Installs `.github/requirements/docs.txt`
 4. Runs `mkdocs gh-deploy --force` which builds the static site and pushes to the `gh-pages` branch
 
 ### Enabling GitHub Pages

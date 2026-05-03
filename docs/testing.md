@@ -8,7 +8,7 @@ A comprehensive pytest suite covering auth, CRUD routes, and all Pydantic models
 
 ```bash
 # Install test dependencies (first time)
-pip install -r requirements-test.txt
+pip install -r .github/requirements/test.txt
 
 # Run the full suite
 pytest tests/ -v
