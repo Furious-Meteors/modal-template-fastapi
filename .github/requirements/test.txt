@@ -5,3 +5,4 @@ PyJWT
 httpx
 pytest>=7.4
 pytest-asyncio>=0.23
+modal
