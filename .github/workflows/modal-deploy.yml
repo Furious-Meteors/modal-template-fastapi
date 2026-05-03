@@ -14,8 +14,13 @@ on:
       - production
 
 jobs:
+  test:
+    name: Test
+    uses: ./.github/workflows/app-testing.yml
+
   deploy:
     name: Deploy to Modal
+    needs: test
     runs-on: ubuntu-latest
 
     if: |
