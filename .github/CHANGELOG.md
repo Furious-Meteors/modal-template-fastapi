@@ -77,7 +77,7 @@ Initial production release of `modal-template-fastapi`.
 - `test_items.py` — 30 tests covering full CRUD lifecycle, validation, isolation, and edge cases
 - `test_models.py` — 29 tests covering all Pydantic models, required fields, optional fields, and constraints
 - `pytest.ini` with `testpaths = tests` and `pythonpath = .`
-- `requirements-test.txt` with `pytest`, `httpx`, `pytest-asyncio`, `PyJWT`, `fastapi`, `pydantic`
+- `.github/requirements/test.txt` with `pytest`, `httpx`, `pytest-asyncio`, `PyJWT`, `fastapi`, `pydantic`
 
 #### CI/CD (`.github/workflows/`)
 - `app-testing.yml` — reusable pytest workflow triggered on `pull_request` to `dev`/`production` and via `workflow_call`
