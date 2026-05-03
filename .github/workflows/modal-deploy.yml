@@ -59,5 +59,8 @@ jobs:
           echo "Deploying modal_app.py to Modal env: ${{ steps.set-env.outputs.deploy_env }}"
 
       - name: Deploy to Modal
+        env:
+          MODAL_ENV: ${{ steps.set-env.outputs.deploy_env }}
         run: |
-          modal deploy modal_app.py --env "${{ steps.set-env.outputs.deploy_env }}"
+          echo "MODAL_ENV=$MODAL_ENV"
+          modal deploy modal_app.py --env "$MODAL_ENV"
