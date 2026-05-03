@@ -166,6 +166,7 @@ venv.bak/
 
 # mkdocs documentation
 /site
+docs/swagger.yaml
 
 # mypy
 .mypy_cache/

@@ -1,0 +1,201 @@
+/* ============================================================
+   Typography
+   ============================================================ */
+
+.md-typeset h1 {
+  font-weight: 900;
+  letter-spacing: -0.03em;
+}
+
+.md-typeset h2 {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  border-bottom: 2px solid var(--md-primary-fg-color--light);
+  padding-bottom: 0.3rem;
+}
+
+.md-typeset h3 {
+  font-weight: 600;
+}
+
+/* ============================================================
+   Hero — index.md
+   ============================================================ */
+
+.hero-title {
+  font-size: clamp(2rem, 5vw, 3.25rem);
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 60%, #4f46e5 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 0.75rem;
+}
+
+.hero-subtitle {
+  font-size: 1.1rem;
+  opacity: 0.72;
+  max-width: 580px;
+  margin: 0 auto 1.75rem;
+  line-height: 1.65;
+}
+
+.hero-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: center;
+  margin-bottom: 2.5rem;
+}
+
+/* ============================================================
+   Card grid hover effect
+   ============================================================ */
+
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid.cards > ol > li {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.65rem;
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
+}
+
+.md-typeset .grid.cards > ul > li:hover,
+.md-typeset .grid.cards > ol > li:hover {
+  box-shadow: 0 6px 28px rgba(79, 70, 229, 0.13);
+  transform: translateY(-3px);
+  border-color: var(--md-primary-fg-color--light);
+}
+
+/* ============================================================
+   HTTP method badges
+   ============================================================ */
+
+.method-get {
+  display: inline-block;
+  background: #dcfce7;
+  color: #15803d;
+  padding: 0.15em 0.65em;
+  border-radius: 0.3rem;
+  font-weight: 800;
+  font-size: 0.78em;
+  font-family: var(--md-code-font-family);
+  letter-spacing: 0.03em;
+  vertical-align: middle;
+}
+
+.method-post {
+  display: inline-block;
+  background: #dbeafe;
+  color: #1d4ed8;
+  padding: 0.15em 0.65em;
+  border-radius: 0.3rem;
+  font-weight: 800;
+  font-size: 0.78em;
+  font-family: var(--md-code-font-family);
+  letter-spacing: 0.03em;
+  vertical-align: middle;
+}
+
+.method-put {
+  display: inline-block;
+  background: #fef9c3;
+  color: #a16207;
+  padding: 0.15em 0.65em;
+  border-radius: 0.3rem;
+  font-weight: 800;
+  font-size: 0.78em;
+  font-family: var(--md-code-font-family);
+  letter-spacing: 0.03em;
+  vertical-align: middle;
+}
+
+.method-delete {
+  display: inline-block;
+  background: #fee2e2;
+  color: #b91c1c;
+  padding: 0.15em 0.65em;
+  border-radius: 0.3rem;
+  font-weight: 800;
+  font-size: 0.78em;
+  font-family: var(--md-code-font-family);
+  letter-spacing: 0.03em;
+  vertical-align: middle;
+}
+
+/* ============================================================
+   Dark mode — method badges
+   ============================================================ */
+
+[data-md-color-scheme="slate"] .method-get    { background: #14532d; color: #86efac; }
+[data-md-color-scheme="slate"] .method-post   { background: #1e3a8a; color: #93c5fd; }
+[data-md-color-scheme="slate"] .method-put    { background: #713f12; color: #fde68a; }
+[data-md-color-scheme="slate"] .method-delete { background: #7f1d1d; color: #fca5a5; }
+
+/* ============================================================
+   Mermaid diagrams
+   ============================================================ */
+
+.mermaid {
+  text-align: center;
+  margin: 1.5rem 0;
+}
+
+/* ============================================================
+   Table improvements
+   ============================================================ */
+
+.md-typeset table:not([class]) {
+  font-size: 0.875rem;
+  border-collapse: collapse;
+}
+
+.md-typeset table:not([class]) th {
+  font-weight: 700;
+  background-color: var(--md-default-fg-color--lightest);
+  white-space: nowrap;
+}
+
+.md-typeset table:not([class]) td code {
+  background: transparent;
+  font-size: 0.85em;
+}
+
+/* ============================================================
+   Admonition polish
+   ============================================================ */
+
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 0.5rem;
+  font-size: 0.9rem;
+}
+
+/* ============================================================
+   Code block copy button
+   ============================================================ */
+
+.md-clipboard {
+  transition: color 0.2s;
+}
+
+/* ============================================================
+   Navigation sidebar
+   ============================================================ */
+
+.md-nav__title {
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* ============================================================
+   Scrollbar
+   ============================================================ */
+
+::-webkit-scrollbar           { width: 6px; height: 6px; }
+::-webkit-scrollbar-track     { background: transparent; }
+::-webkit-scrollbar-thumb     { background: var(--md-default-fg-color--lighter); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--md-primary-fg-color--light); }
