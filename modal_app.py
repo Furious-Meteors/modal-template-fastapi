@@ -1,9 +1,13 @@
+import os
+
 import modal
 
 from modal_common import build_fastapi_config, get_env_config
 
 # SETTING MODAL ENVIRONMENT
-MODAL_ENV = modal.config.get("environment") or "dev"
+MODAL_ENV = os.environ["MODAL_ENV"]
+
+# SETTING MODAL ENVIRONMENT CONFIG
 env_config = get_env_config(MODAL_ENV)
 
 # SETTING MODAL APP
