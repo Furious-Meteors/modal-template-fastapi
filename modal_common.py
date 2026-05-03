@@ -124,7 +124,6 @@ def build_fastapi_config(env: EnvConfig) -> dict:
         "secrets": env.secrets + [modal.Secret.from_dict({"MODAL_ENV": env.env_name})],
         "volumes": env.volumes,
         "min_containers": env.min_containers,
-        "max_concurrent_requests": env.max_concurrent_requests,
     }
 
     if env.gpu_type:
