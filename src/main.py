@@ -1,4 +1,5 @@
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 
@@ -10,21 +11,26 @@ from fastapi.responses import JSONResponse
 from src.api.models import ErrorDetail
 from src.api.routes import router
 
+from modal_common import get_env_config
+
+env_config = get_env_config(os.environ.get("MODAL_ENV", "dev"))
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+APP_NAME = f'{env_config.app_name}-{env_config.env_name}'
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting modal-template-fastapi")
+    logger.info(f"Starting {APP_NAME}")
     yield
-    logger.info("Shutting down modal-template-fastapi")
+    logger.info(f"Shutting down {APP_NAME}")
 
 
 app = FastAPI(
-    title="modal-template-fastapi",
-    description="A FastAPI template deployed on Modal with CRUD endpoints.",
-    version="1.0.0",
+    title=APP_NAME,
+    description=env_config.app_description,
+    version=env_config.app_version,
     lifespan=lifespan,
 )
 
@@ -49,4 +55,4 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
-app.include_router(router, prefix="/api/v1")
+app.include_router(router, prefix=env_config.server_prefix)

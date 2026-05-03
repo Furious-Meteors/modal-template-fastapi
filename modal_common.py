@@ -43,30 +43,39 @@ FASTAPI_VOLUME = {
 
 @dataclass
 class EnvConfig:
-    # Required app config
+    # APP CONFIGURATION
     env_name: str
     app_name: str = "modal-template-fastapi"
+    app_version: str = "1.0.0"
+    app_description: str = "A FastAPI template deployed on Modal with CRUD endpoints."
 
-    # Optional custom domain
-    custom_domain: Optional[str] = None
+    # SERVER CONFIGURATION
+    server_port: int = 8000
+    server_host: str = "0.0.0.0"
+    server_reload: bool = False
+    server_prefix: str = "/api/v1"
+ 
+    # CUSTOM SERVER DOMAIN(OPTIONAL)
+    server_domain: Optional[str] = None
 
-    # Hardware config
+    # HARDWARE CONFIGURATION
     cpu_core_count: int = 1
     ram_memory_mib: int = 256
     gpu_type: Optional[str] = None
 
-    # Runtime config
+    # RUNTIME CONFIGURATION
     server_hard_timeout_seconds: int = 150
     min_containers: int = 0
+    max_concurrent_requests: int = 5
 
-    # Modal resources
+    # MODAL RESOURCES
     secrets: list = field(default_factory=list)
     volumes: Dict[str, modal.Volume] = field(default_factory=lambda: FASTAPI_VOLUME)
 
 
 FEAT = EnvConfig(
     env_name="feat",
-    custom_domain="feat-app.modal.run",
+    server_domain="feat-app.modal.run",
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
     ],
@@ -74,7 +83,7 @@ FEAT = EnvConfig(
 
 DEV = EnvConfig(
     env_name="dev",
-    custom_domain="dev-app.modal.run",
+    server_domain="dev-app.modal.run",
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
     ],
@@ -82,7 +91,7 @@ DEV = EnvConfig(
 
 PROD = EnvConfig(
     env_name="prod",
-    custom_domain="prod-app.modal.run",
+    server_domain="prod-app.modal.run",
     # min_containers=1, # Uncomment this to run 1 container in production, when building Apps
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
@@ -115,6 +124,7 @@ def build_fastapi_config(env: EnvConfig) -> dict:
         "secrets": env.secrets + [modal.Secret.from_dict({"MODAL_ENV": env.env_name})],
         "volumes": env.volumes,
         "min_containers": env.min_containers,
+        "max_concurrent_requests": env.max_concurrent_requests,
     }
 
     if env.gpu_type:
