@@ -44,10 +44,10 @@ FASTAPI_VOLUME = {
 @dataclass
 class EnvConfig:
     # Required app config
+    app_name: str = "modal-template-fastapi"
     env_name: str
 
-    # Shared app name
-    app_name: str = "modal-template-fastapi"
+    # Optional custom domain
     custom_domain: Optional[str] = None
 
     # Hardware config
