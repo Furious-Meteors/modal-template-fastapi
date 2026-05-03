@@ -44,15 +44,16 @@ FASTAPI_VOLUME = {
 @dataclass
 class EnvConfig:
     # Required app config
-    app_name: str = "modal-template-fastapi"
     env_name: str
+
+    # Shared app name
+    app_name: str = "modal-template-fastapi"
     custom_domain: Optional[str] = None
 
     # Hardware config
     cpu_core_count: int = 1
     ram_memory_mib: int = 256
     gpu_type: Optional[str] = None
-    min_containers: int = 0
 
     # Runtime config
     server_hard_timeout_seconds: int = 150
