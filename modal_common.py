@@ -83,7 +83,7 @@ DEV = EnvConfig(
 PROD = EnvConfig(
     env_name="prod",
     custom_domain="prod-app.modal.run",
-    min_containers=1,
+    # min_containers=1, # Uncomment this to run 1 container in production, when building Apps
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
     ],
