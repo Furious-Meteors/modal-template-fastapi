@@ -11,6 +11,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+- `EnvConfig` in `modal_common.py` now centralizes app and server metadata (`app_version`, `app_description`, `server_host`, `server_port`, `server_prefix`) and adds `max_concurrent_requests`
+- Deployment wiring in `modal_app.py` now uses `@modal.concurrent(max_inputs=env_config.max_concurrent_requests)` and local `uvicorn` startup reads host/port from environment config
+- FastAPI app metadata and API prefix in `src/main.py` now come from environment config instead of hardcoded values
+- Health response metadata in `src/api/routes.py` now reports environment-aware `service_name` and config-driven `version`
+- Modal environment domain field renamed from `custom_domain` to `server_domain` across environment definitions
+
+### Added
+- Dedicated CI dependency files: `.github/requirements/test.txt` and `.github/requirements/docs.txt`
+- Lightweight `modal` module stub in `tests/conftest.py` so tests can run in local/CI contexts where `modal` is not installed
+
+### Fixed
+- GitHub workflows now install dependencies from repository-scoped requirement files (`.github/workflows/app-testing.yml`, `.github/workflows/docs.yml`)
+- Health endpoint test expectation updated to validate the environment-aware service name format
+
 ---
 
 ## [1.0.0] — 2026-05-03
