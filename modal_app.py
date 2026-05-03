@@ -16,7 +16,7 @@ app = modal.App(APP_NAME)
 
 # SETTING MODAL PROJECT
 @app.function(**build_fastapi_config(env_config))
-@modal.asgi_app(custom_domain=env_config.server_domain)
+@modal.asgi_app(custom_domains=[env_config.server_domain])
 @modal.concurrent(max_inputs=env_config.max_concurrent_requests)
 def fastapi_app():
     from src.main import app as fastapi_app
