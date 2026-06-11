@@ -14,16 +14,38 @@ env_config = get_env_config(MODAL_ENV)
 APP_NAME = f"{env_config.app_name}-{env_config.env_name}"
 app = modal.App(APP_NAME)
 
+# Inject OTel env vars before the Cls is instantiated so that @enter reads the
+# correct values at container startup. setup.py reads these at call time (never
+# at import time), so setting them here — before the first request — is safe.
+if env_config.otel_endpoint:
+    os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", env_config.otel_endpoint)
+os.environ.setdefault("OTEL_SERVICE_NAME", env_config.service_name or env_config.app_name)
+os.environ.setdefault("MODAL_ENV", env_config.env_name)
+
+
 # SETTING MODAL PROJECT
-@app.function(**build_fastapi_config(env_config))
-@modal.asgi_app()
+@app.cls(**build_fastapi_config(env_config))
 @modal.concurrent(max_inputs=env_config.max_concurrent_requests)
-def fastapi_app():
-    from src.main import app as fastapi_app
-    return fastapi_app
+class FastAPIService:
+    @modal.enter()
+    def startup(self) -> None:
+        # Runs once per container during warmup — never on the request hot path.
+        # SDK init cost (~15ms) is paid here so live requests stay at ~2-5µs overhead.
+        from src.observability import setup_telemetry
+        setup_telemetry()
+
+    @modal.asgi_app()
+    def fastapi_app(self):
+        from src.main import app as fastapi_app
+        return fastapi_app
+
 
 @app.local_entrypoint()
 def main():
+    # Mirror what @enter does in the Modal container so telemetry works locally too.
+    # The env vars above are already set; setup_telemetry() reads them at call time.
+    from src.observability import setup_telemetry
+    setup_telemetry()
     from src.main import app as fastapi_app
     from uvicorn import run
     run(fastapi_app, host=env_config.server_host, port=env_config.server_port)
