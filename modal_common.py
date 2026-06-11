@@ -86,12 +86,10 @@ class EnvConfig:
 FEAT = EnvConfig(
     env_name="feat",
     server_domain="feat-app.modal.run",
-    # Same Grafana Cloud endpoint as prod — data is segmented by deployment.environment=feat.
-    # Update the region slug to match your stack, same as the PROD value below.
-    otel_endpoint="https://otlp-gateway-prod-us-east-0.grafana.net/otlp",
+    otel_endpoint=None,  # endpoint comes from GRAFANA_OTLP_ENDPOINT inside the grafana-otlp secret
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
-        # Same secret as prod — feat shares the same Grafana Cloud instance.
+        # Provides GRAFANA_INSTANCE_ID, GRAFANA_OTLP_TOKEN, and GRAFANA_OTLP_ENDPOINT.
         modal.Secret.from_name("grafana-otlp"),
     ],
 )
@@ -109,13 +107,14 @@ PROD = EnvConfig(
     env_name="prod",
     server_domain="prod-app.modal.run",
     # min_containers=1, # Uncomment to keep 1 warm container in production
-    # Grafana Cloud OTLP/HTTP gateway — update the region slug to match your stack.
-    # Find it at grafana.com/profile/stacks → your stack → "Details" → OTLP endpoint.
-    otel_endpoint="https://otlp-gateway-prod-us-east-0.grafana.net/otlp",
+    otel_endpoint=None,  # endpoint comes from GRAFANA_OTLP_ENDPOINT inside the grafana-otlp secret
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
-        # Provides GRAFANA_INSTANCE_ID (numeric stack ID) and GRAFANA_OTLP_TOKEN (API key).
-        # Create once: modal secret create grafana-otlp GRAFANA_INSTANCE_ID=... GRAFANA_OTLP_TOKEN=...
+        # Provides GRAFANA_INSTANCE_ID, GRAFANA_OTLP_TOKEN, and GRAFANA_OTLP_ENDPOINT.
+        # Create once: modal secret create grafana-otlp \
+        #   GRAFANA_INSTANCE_ID=<numeric stack ID> \
+        #   GRAFANA_OTLP_TOKEN=<API token with metrics:write traces:write> \
+        #   GRAFANA_OTLP_ENDPOINT=<https://otlp-gateway-<region>.grafana.net/otlp>
         modal.Secret.from_name("grafana-otlp"),
     ],
 )
