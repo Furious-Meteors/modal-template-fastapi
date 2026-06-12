@@ -18,10 +18,16 @@ PIP_PACKAGES: List[str] = [
     "websockets",
     "pydantic",
     "PyJWT",
+    # OpenTelemetry — OTLP/HTTP push to Grafana Cloud (or any OTLP-compatible backend)
+    "opentelemetry-sdk>=1.24",
+    "opentelemetry-exporter-otlp-proto-http>=1.24",
+    "opentelemetry-semantic-conventions>=0.45b0",
+    # Injects otelTraceID/otelSpanID into every LogRecord for log-trace correlation
+    "opentelemetry-instrumentation-logging>=0.45b0",
 ]
 
 cpu_image = (
-    modal.Image.debian_slim(python_version="3.10")
+    modal.Image.debian_slim(python_version="3.11")
     .apt_install(*APT_PACKAGES)
     .uv_pip_install(*PIP_PACKAGES)
     .add_local_dir(".", remote_path="/root")
@@ -72,29 +78,39 @@ class EnvConfig:
     secrets: list = field(default_factory=list)
     volumes: Dict[str, modal.Volume] = field(default_factory=lambda: FASTAPI_VOLUME)
 
+    # OBSERVABILITY — set in prod preset only; None = telemetry disabled (feat/dev)
+    otel_endpoint: Optional[str] = None  # Grafana Cloud OTLP base URL
+    service_name:  Optional[str] = None  # defaults to app_name when None
+
 
 FEAT = EnvConfig(
     env_name="feat",
     server_domain="feat-app.modal.run",
+    otel_endpoint=None,  # endpoint comes from GRAFANA_OTLP_ENDPOINT inside the grafana-otlp secret
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
+        modal.Secret.from_name("grafana-otlp"),
     ],
 )
 
 DEV = EnvConfig(
     env_name="dev",
     server_domain="dev-app.modal.run",
+    otel_endpoint=None,  # no telemetry in dev — keeps cost at zero
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
+        modal.Secret.from_name("grafana-otlp"),
     ],
 )
 
 PROD = EnvConfig(
     env_name="prod",
     server_domain="prod-app.modal.run",
-    # min_containers=1, # Uncomment this to run 1 container in production, when building Apps
+    # min_containers=1, # Uncomment to keep 1 warm container in production
+    otel_endpoint=None,  # endpoint comes from GRAFANA_OTLP_ENDPOINT inside the grafana-otlp secret
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
+        modal.Secret.from_name("grafana-otlp"),
     ],
 )
 
@@ -124,6 +140,7 @@ def build_fastapi_config(env: EnvConfig) -> dict:
         "secrets": env.secrets + [modal.Secret.from_dict({"MODAL_ENV": env.env_name})],
         "volumes": env.volumes,
         "min_containers": env.min_containers,
+        "enable_memory_snapshot": True,
     }
 
     if env.gpu_type:

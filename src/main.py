@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from src.api.models import ErrorDetail
 from src.api.routes import router
+from src.observability.middleware import TelemetryMiddleware
 
 from modal_common import get_env_config
 
@@ -41,6 +42,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Registered last → executes outermost, so it wraps CORS, auth, validation errors, and 404s.
+app.add_middleware(TelemetryMiddleware)
 
 
 @app.exception_handler(RequestValidationError)
