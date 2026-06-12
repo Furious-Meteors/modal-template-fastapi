@@ -72,17 +72,6 @@ def setup_telemetry() -> None:
     _token       = os.environ.get("GRAFANA_OTLP_TOKEN", "")
     _grf_ep      = os.environ.get("GRAFANA_OTLP_ENDPOINT", "")
     _otlp_ep     = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-    logger.info(
-        "OTel secret check — "
-        "GRAFANA_INSTANCE_ID=%s  "
-        "GRAFANA_OTLP_TOKEN=%s  "
-        "GRAFANA_OTLP_ENDPOINT=%s  "
-        "OTEL_EXPORTER_OTLP_ENDPOINT=%s",
-        _instance_id or "NOT SET",
-        ("SET (starts: " + _token[:8] + "...)") if _token else "NOT SET",
-        _grf_ep or "NOT SET",
-        _otlp_ep or "NOT SET",
-    )
     # ─────────────────────────────────────────────────────────────────────
 
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
