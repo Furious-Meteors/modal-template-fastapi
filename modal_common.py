@@ -89,7 +89,6 @@ FEAT = EnvConfig(
     otel_endpoint=None,  # endpoint comes from GRAFANA_OTLP_ENDPOINT inside the grafana-otlp secret
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
-        # Provides GRAFANA_INSTANCE_ID, GRAFANA_OTLP_TOKEN, and GRAFANA_OTLP_ENDPOINT.
         modal.Secret.from_name("grafana-otlp"),
     ],
 )
@@ -100,6 +99,7 @@ DEV = EnvConfig(
     otel_endpoint=None,  # no telemetry in dev — keeps cost at zero
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
+        modal.Secret.from_name("grafana-otlp"),
     ],
 )
 
@@ -110,11 +110,6 @@ PROD = EnvConfig(
     otel_endpoint=None,  # endpoint comes from GRAFANA_OTLP_ENDPOINT inside the grafana-otlp secret
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
-        # Provides GRAFANA_INSTANCE_ID, GRAFANA_OTLP_TOKEN, and GRAFANA_OTLP_ENDPOINT.
-        # Create once: modal secret create grafana-otlp \
-        #   GRAFANA_INSTANCE_ID=<numeric stack ID> \
-        #   GRAFANA_OTLP_TOKEN=<API token with metrics:write traces:write> \
-        #   GRAFANA_OTLP_ENDPOINT=<https://otlp-gateway-<region>.grafana.net/otlp>
         modal.Secret.from_name("grafana-otlp"),
     ],
 )
@@ -145,6 +140,7 @@ def build_fastapi_config(env: EnvConfig) -> dict:
         "secrets": env.secrets + [modal.Secret.from_dict({"MODAL_ENV": env.env_name})],
         "volumes": env.volumes,
         "min_containers": env.min_containers,
+        "enable_memory_snapshot": True,
     }
 
     if env.gpu_type:

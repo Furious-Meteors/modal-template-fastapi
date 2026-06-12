@@ -14,14 +14,6 @@ env_config = get_env_config(MODAL_ENV)
 APP_NAME = f"{env_config.app_name}-{env_config.env_name}"
 app = modal.App(APP_NAME)
 
-# Inject OTel env vars before the Cls is instantiated so that @enter reads the
-# correct values at container startup. setup.py reads these at call time (never
-# at import time), so setting them here — before the first request — is safe.
-#
-# Priority order for the OTLP endpoint:
-#   1. GRAFANA_OTLP_ENDPOINT — injected by the grafana-otlp Modal secret (preferred)
-#   2. env_config.otel_endpoint — code-level value, useful as a local dev override
-# setdefault means whatever is already in the environment (from the secret) always wins.
 _otlp_endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT") or env_config.otel_endpoint
 if _otlp_endpoint:
     os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", _otlp_endpoint)
@@ -33,15 +25,25 @@ os.environ.setdefault("MODAL_ENV", env_config.env_name)
 @app.cls(**build_fastapi_config(env_config))
 @modal.concurrent(max_inputs=env_config.max_concurrent_requests)
 class FastAPIService:
-    @modal.enter()
+    @modal.enter(snap=True)
+    def preload(self) -> None:
+        # Runs once before the CPU snapshot is taken (modal deploy only).
+        # Pre-importing the FastAPI app and all its dependencies bakes them into
+        # the snapshot so subsequent cold starts restore from memory (~50-150ms)
+        # instead of re-importing every module from disk (~300-800ms).
+        import src.main  # noqa: F401
+
+    @modal.enter(snap=False)
     def startup(self) -> None:
-        # Runs once per container during warmup — never on the request hot path.
-        # SDK init cost (~15ms) is paid here so live requests stay at ~2-5µs overhead.
+        # Runs once per container after snapshot restore — never on the request hot path.
+        # Network-bound setup (OTLP connections) must live here; they cannot survive
+        # a snapshot because file descriptors and sockets are not portable across restores.
         from src.observability import setup_telemetry
         setup_telemetry()
 
     @modal.asgi_app()
     def fastapi_app(self):
+        # src.main is already in sys.modules from preload() — this is a cache hit.
         from src.main import app as fastapi_app
         return fastapi_app
 
