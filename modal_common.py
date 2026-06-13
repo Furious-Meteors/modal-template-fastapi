@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -130,6 +131,14 @@ def get_env_config(env_name: str) -> EnvConfig:
         )
 
     return ENV_CONFIGS[env_name]
+
+def configure_env_vars(env: EnvConfig) -> None:
+    _otlp_endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT") or env.otel_endpoint
+    if _otlp_endpoint:
+        os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", _otlp_endpoint)
+    os.environ.setdefault("OTEL_SERVICE_NAME", env.service_name or env.app_name)
+    os.environ.setdefault("MODAL_ENV", env.env_name)
+
 
 def build_fastapi_config(env: EnvConfig) -> dict:
     config = {

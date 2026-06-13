@@ -2,7 +2,7 @@ import os
 
 import modal
 
-from modal_common import build_fastapi_config, get_env_config
+from modal_common import build_fastapi_config, configure_env_vars, get_env_config
 
 # SETTING MODAL ENVIRONMENT
 MODAL_ENV = os.environ.get("MODAL_ENV", "dev")
@@ -14,11 +14,7 @@ env_config = get_env_config(MODAL_ENV)
 APP_NAME = f"{env_config.app_name}-{env_config.env_name}"
 app = modal.App(APP_NAME)
 
-_otlp_endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT") or env_config.otel_endpoint
-if _otlp_endpoint:
-    os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", _otlp_endpoint)
-os.environ.setdefault("OTEL_SERVICE_NAME", env_config.service_name or env_config.app_name)
-os.environ.setdefault("MODAL_ENV", env_config.env_name)
+configure_env_vars(env_config)
 
 
 # SETTING MODAL PROJECT
