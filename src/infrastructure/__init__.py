@@ -22,10 +22,11 @@ Note: TelemetryMiddleware lives in src/adapters/http/middleware.py — it is an
 inbound HTTP adapter, not infrastructure setup.
 """
 
-from src.infrastructure.setup import get_meter, get_tracer, setup_telemetry
+from src.infrastructure.setup import get_meter, get_tracer, record_cold_start, setup_telemetry
 
 __all__ = [
     "setup_telemetry",
+    "record_cold_start",
     "get_tracer",
     "get_meter",
 ]
