@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -78,6 +79,9 @@ class EnvConfig:
     secrets: list = field(default_factory=list)
     volumes: Dict[str, modal.Volume] = field(default_factory=lambda: FASTAPI_VOLUME)
 
+    # CORS — restrict origins per environment; ["*"] allows all (dev only)
+    cors_origins: List[str] = field(default_factory=lambda: ["*"])
+
     # OBSERVABILITY — set in prod preset only; None = telemetry disabled (feat/dev)
     otel_endpoint: Optional[str] = None  # Grafana Cloud OTLP base URL
     service_name:  Optional[str] = None  # defaults to app_name when None
@@ -86,6 +90,7 @@ class EnvConfig:
 FEAT = EnvConfig(
     env_name="feat",
     server_domain="feat-app.modal.run",
+    cors_origins=["*"],
     otel_endpoint=None,  # endpoint comes from GRAFANA_OTLP_ENDPOINT inside the grafana-otlp secret
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
@@ -96,6 +101,7 @@ FEAT = EnvConfig(
 DEV = EnvConfig(
     env_name="dev",
     server_domain="dev-app.modal.run",
+    cors_origins=["*"],  # TODO: replace with your actual Modal domain when known
     otel_endpoint=None,  # no telemetry in dev — keeps cost at zero
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
@@ -106,6 +112,7 @@ DEV = EnvConfig(
 PROD = EnvConfig(
     env_name="prod",
     server_domain="prod-app.modal.run",
+    cors_origins=["*"],  # TODO: replace with your actual Modal domain when known
     # min_containers=1, # Uncomment to keep 1 warm container in production
     otel_endpoint=None,  # endpoint comes from GRAFANA_OTLP_ENDPOINT inside the grafana-otlp secret
     secrets=[
@@ -130,6 +137,20 @@ def get_env_config(env_name: str) -> EnvConfig:
         )
 
     return ENV_CONFIGS[env_name]
+
+def configure_env_vars(env: EnvConfig) -> None:
+    _otlp_endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT") or env.otel_endpoint
+    if _otlp_endpoint:
+        os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", _otlp_endpoint)
+    os.environ.setdefault("OTEL_SERVICE_NAME", env.service_name or env.app_name)
+    os.environ.setdefault("MODAL_ENV", env.env_name)
+    # App metadata — read by src/config.py so src/ never imports modal_common directly
+    os.environ.setdefault("APP_NAME", env.app_name)
+    os.environ.setdefault("APP_VERSION", env.app_version)
+    os.environ.setdefault("APP_DESCRIPTION", env.app_description)
+    os.environ.setdefault("SERVER_PREFIX", env.server_prefix)
+    os.environ.setdefault("CORS_ORIGINS", ",".join(env.cors_origins))
+
 
 def build_fastapi_config(env: EnvConfig) -> dict:
     config = {

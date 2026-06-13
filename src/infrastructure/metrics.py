@@ -1,6 +1,6 @@
 """
-src/observability/metrics.py
-=============================
+src/infrastructure/metrics.py
+==============================
 THIS FILE IS A STUB. Replace it entirely in each new service.
 The template ships this empty on purpose.
 
@@ -17,7 +17,7 @@ CONTRACT
 EXAMPLE  (delete this and replace with your own)
 ─────────────────────────────────────────────────────────────
 
-from src.observability.setup import get_meter
+from src.infrastructure.setup import get_meter
 
 _meter = get_meter("modal-fastapi")
 
@@ -37,7 +37,7 @@ items_fetch_duration = _meter.create_histogram(
 )
 
 # Usage in your route handler:
-#   from src.observability.metrics import items_created, items_fetch_duration
+#   from src.infrastructure.metrics import items_created, items_fetch_duration
 #   items_created.add(1, {"item_type": item.type})
 #   items_fetch_duration.record(elapsed_ms, {"cache_hit": "false"})
 """

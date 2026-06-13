@@ -1,5 +1,5 @@
 """
-Tests for src/observability/middleware.py
+Tests for src/adapters/http/middleware.py
 
 Uses the real FastAPI app (with TelemetryMiddleware already mounted) so
 middleware behavior is tested through actual HTTP requests via TestClient.
@@ -82,7 +82,7 @@ def test_middleware_uses_route_template_not_raw_path(client: TestClient):
     in the structured log. We confirm this by checking the response is not 404
     for a known item ID path.
     """
-    created = client.post("/api/v1/items", json={"data": {"name": "test"}}).json()
+    created = client.post("/api/v1/items", json={"name": "test"}).json()
     item_id = created["data"]["id"]
     response = client.get(f"/api/v1/items/{item_id}")
     assert response.status_code == 200
@@ -105,7 +105,7 @@ def test_middleware_does_not_change_200_status(client: TestClient):
 
 
 def test_middleware_does_not_change_201_status(client: TestClient):
-    response = client.post("/api/v1/items", json={"data": {"name": "x"}})
+    response = client.post("/api/v1/items", json={"name": "x"})
     assert response.status_code == 201
 
 
