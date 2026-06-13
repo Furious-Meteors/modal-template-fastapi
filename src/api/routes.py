@@ -1,5 +1,4 @@
 import uuid
-import os
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,9 +11,7 @@ from src.api.models import (
     HealthStatus,
     ItemResponse,
 )
-from modal_common import get_env_config
-
-env_config = get_env_config(os.environ.get("MODAL_ENV", "dev"))
+from src.utils.config import APP_ENV, APP_NAME, APP_VERSION
 
 router = APIRouter()
 
@@ -24,8 +21,8 @@ async def health_check():
     return HealthCheckResponse(
         session_id=str(uuid.uuid4()),
         status=HealthStatus.HEALTHY,
-        service_name=f'{env_config.app_name}-{env_config.env_name}',
-        version=env_config.app_version,
+        service_name=f'{APP_NAME}-{APP_ENV}',
+        version=APP_VERSION,
         services_summary={"total": 1, "healthy": 1, "unhealthy": 0},
     )
 

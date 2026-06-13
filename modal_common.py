@@ -138,6 +138,11 @@ def configure_env_vars(env: EnvConfig) -> None:
         os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", _otlp_endpoint)
     os.environ.setdefault("OTEL_SERVICE_NAME", env.service_name or env.app_name)
     os.environ.setdefault("MODAL_ENV", env.env_name)
+    # App metadata — read by src/config.py so src/ never imports modal_common directly
+    os.environ.setdefault("APP_NAME", env.app_name)
+    os.environ.setdefault("APP_VERSION", env.app_version)
+    os.environ.setdefault("APP_DESCRIPTION", env.app_description)
+    os.environ.setdefault("SERVER_PREFIX", env.server_prefix)
 
 
 def build_fastapi_config(env: EnvConfig) -> dict:
