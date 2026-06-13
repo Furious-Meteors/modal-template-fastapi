@@ -1,10 +1,11 @@
 """
-src/observability/middleware.py
+src/adapters/http/middleware.py
 ================================
-FastAPI/Starlette middleware that auto-instruments every HTTP request.
+Inbound HTTP adapter — telemetry sidecar at the HTTP boundary.
+Wraps every request in an OTel span, records metrics, and emits structured logs.
 Add once in main.py — no per-route changes needed.
 
-    from src.observability.middleware import TelemetryMiddleware
+    from src.adapters.http.middleware import TelemetryMiddleware
     app.add_middleware(TelemetryMiddleware)
 
 What is recorded automatically per request
@@ -47,7 +48,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Match
 
-from src.observability.setup import get_meter, get_tracer
+from src.infrastructure.setup import get_meter, get_tracer  # SDK wiring only — no circular dep
 
 logger = logging.getLogger(__name__)
 
