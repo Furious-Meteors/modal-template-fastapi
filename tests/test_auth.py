@@ -89,9 +89,10 @@ def test_valid_token_grants_access(auth_client: TestClient, auth_headers: dict):
     assert response.status_code == 200
 
 
-def test_valid_token_on_post(auth_client: TestClient, auth_headers: dict):
+def test_valid_token_on_post(auth_client: TestClient, write_headers: dict):
+    """POST requires items:write scope — a write-scoped token must succeed."""
     response = auth_client.post(
-        "/api/v1/items", json={"data": {"name": "test"}}, headers=auth_headers
+        "/api/v1/items", json={"name": "test"}, headers=write_headers
     )
     assert response.status_code == 201
 
