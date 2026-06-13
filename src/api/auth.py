@@ -67,3 +67,35 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return verify_token(credentials.credentials)
+
+
+def require_scope(*scopes: str):
+    """
+    FastAPI dependency factory — enforces JWT scope claims on a route.
+
+    Usage:
+        @router.post("/items", ...)
+        async def create_item(
+            current_user: dict = Depends(require_scope("items:write")),
+        ): ...
+
+    The JWT must include a "scopes" claim (list of strings) containing all
+    required scopes. Returns 403 if any scope is missing, 401 if token invalid.
+
+    Scopes are additive — Depends(require_scope("items:read", "items:write"))
+    requires both scopes to be present.
+    """
+    def _check(current_user: dict = Depends(get_current_user)) -> dict:
+        token_scopes = set(current_user.get("scopes", []))
+        missing = set(scopes) - token_scopes
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ErrorDetail(
+                    detail=f"Missing required scopes: {', '.join(sorted(missing))}",
+                    session_id=str(uuid.uuid4()),
+                    error_code="INSUFFICIENT_SCOPE",
+                ).model_dump(),
+            )
+        return current_user
+    return _check

@@ -149,3 +149,21 @@ def get_tracer(name: str | None = None) -> trace.Tracer:
 def get_meter(name: str | None = None) -> metrics.Meter:
     svc = os.environ.get("OTEL_SERVICE_NAME", "modal-fastapi")
     return metrics.get_meter(name or svc)
+
+
+def record_cold_start() -> None:
+    """
+    Increment the cold-start counter against the live MeterProvider.
+
+    Call once from Modal's startup() hook after setup_telemetry() so the
+    increment is exported to Grafana. A spike in this counter = containers
+    scaling up. Calling at module import time (before setup_telemetry) would
+    bind to the no-op provider and silently drop the data.
+    """
+    svc = os.environ.get("OTEL_SERVICE_NAME", "modal-fastapi")
+    counter = get_meter().create_counter(
+        "app.container.cold_start.count",
+        description="Number of container cold starts",
+        unit="1",
+    )
+    counter.add(1, {"service": svc})
