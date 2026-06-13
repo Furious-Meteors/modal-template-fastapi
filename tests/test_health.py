@@ -19,8 +19,9 @@ def test_health_service_name(client: TestClient):
 
 
 def test_health_version(client: TestClient):
+    from src.utils.config import APP_VERSION
     data = client.get("/api/v1/health").json()
-    assert data["version"] == "1.0.0"
+    assert data["version"] == APP_VERSION
 
 
 def test_health_has_session_id(client: TestClient):
