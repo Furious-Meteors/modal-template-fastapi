@@ -1,10 +1,11 @@
 """
-src/observability/middleware.py
+src/adapters/http/middleware.py
 ================================
-FastAPI/Starlette middleware that auto-instruments every HTTP request.
+Inbound HTTP adapter — telemetry sidecar at the HTTP boundary.
+Wraps every request in an OTel span, records metrics, and emits structured logs.
 Add once in main.py — no per-route changes needed.
 
-    from src.observability.middleware import TelemetryMiddleware
+    from src.adapters.http.middleware import TelemetryMiddleware
     app.add_middleware(TelemetryMiddleware)
 
 What is recorded automatically per request
@@ -47,53 +48,51 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Match
 
-from src.observability.setup import get_meter, get_tracer
+from src.infrastructure.setup import get_meter, get_tracer
 
 logger = logging.getLogger(__name__)
 
-# ── Instruments ────────────────────────────────────────────────────────────
-# Created at import time against whatever MeterProvider is set.
-# If setup_telemetry() hasn't been called yet (e.g. in tests), these
-# bind to the global no-op provider and become true no-ops.
+# ── Lazy instrument initialisation ─────────────────────────────────────────
+# Instruments are created on the first request, not at module import time.
+# This guarantees they are bound to the real MeterProvider set by
+# setup_telemetry() in Modal's startup() hook — not to the no-op provider
+# that exists at snapshot / import time.
 
-_meter = get_meter()
+_instruments: dict | None = None
 
-_request_count = _meter.create_counter(
-    "http.server.request.count",
-    description="Total HTTP requests received",
-    unit="1",
-)
-_request_duration = _meter.create_histogram(
-    "http.server.request.duration",
-    description="HTTP request wall-clock duration",
-    unit="ms",
-)
-_active_requests = _meter.create_up_down_counter(
-    "http.server.active_requests",
-    description="HTTP requests currently in flight",
-    unit="1",
-)
-_error_count = _meter.create_counter(
-    "http.server.error.count",
-    description="HTTP responses with 4xx or 5xx status",
-    unit="1",
-)
-_response_size = _meter.create_histogram(
-    "http.server.response.size",
-    description="HTTP response body size",
-    unit="By",
-)
 
-# ── Cold-start counter ─────────────────────────────────────────────────────
-# Incremented once at module import, which happens during @enter warmup.
-# A spike in this counter in Grafana = containers cold-starting.
-
-_cold_starts = _meter.create_counter(
-    "app.container.cold_start.count",
-    description="Number of container cold starts (module imports)",
-    unit="1",
-)
-_cold_starts.add(1, {"service": "modal-fastapi"})
+def _get_instruments() -> dict:
+    global _instruments
+    if _instruments is None:
+        meter = get_meter()
+        _instruments = {
+            "request_count": meter.create_counter(
+                "http.server.request.count",
+                description="Total HTTP requests received",
+                unit="1",
+            ),
+            "request_duration": meter.create_histogram(
+                "http.server.request.duration",
+                description="HTTP request wall-clock duration",
+                unit="ms",
+            ),
+            "active_requests": meter.create_up_down_counter(
+                "http.server.active_requests",
+                description="HTTP requests currently in flight",
+                unit="1",
+            ),
+            "error_count": meter.create_counter(
+                "http.server.error.count",
+                description="HTTP responses with 4xx or 5xx status",
+                unit="1",
+            ),
+            "response_size": meter.create_histogram(
+                "http.server.response.size",
+                description="HTTP response body size",
+                unit="By",
+            ),
+        }
+    return _instruments
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -135,10 +134,11 @@ class TelemetryMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: RequestResponseEndpoint,
     ) -> Response:
-        tracer     = get_tracer()
-        route      = _route_template(request)
-        method     = request.method
-        t_start    = time.perf_counter()
+        tracer  = get_tracer()
+        instr   = _get_instruments()
+        route   = _route_template(request)
+        method  = request.method
+        t_start = time.perf_counter()
         # Generate once per request so the span always has a non-empty session_id.
         # setdefault below lets a route override this with its own value if it sets
         # the x-session-id header explicitly — the middleware value is the fallback.
@@ -146,7 +146,7 @@ class TelemetryMiddleware(BaseHTTPMiddleware):
 
         # ── In-flight gauge ───────────────────────────────────────────
         try:
-            _active_requests.add(1, {"method": method, "route": route})
+            instr["active_requests"].add(1, {"method": method, "route": route})
         except Exception:
             pass
 
@@ -178,8 +178,8 @@ class TelemetryMiddleware(BaseHTTPMiddleware):
             except Exception as exc:
                 span.record_exception(exc)
                 span.set_status(StatusCode.ERROR, str(exc))
-                _record(method, route, 500, (time.perf_counter() - t_start) * 1000, 0)
-                _active_requests.add(-1, {"method": method, "route": route})
+                _record(instr, method, route, 500, (time.perf_counter() - t_start) * 1000, 0)
+                instr["active_requests"].add(-1, {"method": method, "route": route})
                 raise
 
             # ── Annotate span ─────────────────────────────────────────
@@ -201,7 +201,7 @@ class TelemetryMiddleware(BaseHTTPMiddleware):
             # ── Record metrics ────────────────────────────────────────
             duration_ms    = (time.perf_counter() - t_start) * 1000
             content_length = int(response.headers.get("content-length", 0))
-            _record(method, route, status, duration_ms, content_length)
+            _record(instr, method, route, status, duration_ms, content_length)
 
             # ── Structured log ────────────────────────────────────────
             ctx       = span.get_span_context()
@@ -221,11 +221,12 @@ class TelemetryMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-            _active_requests.add(-1, {"method": method, "route": route})
+            instr["active_requests"].add(-1, {"method": method, "route": route})
             return response
 
 
 def _record(
+    instr: dict,
     method: str,
     route: str,
     status: int,
@@ -235,11 +236,11 @@ def _record(
     """Record all per-request metrics. Swallows exceptions silently."""
     try:
         lb = _labels(method, route, status)
-        _request_count.add(1, lb)
-        _request_duration.record(duration_ms, lb)
+        instr["request_count"].add(1, lb)
+        instr["request_duration"].record(duration_ms, lb)
         if status >= 400:
-            _error_count.add(1, lb)
+            instr["error_count"].add(1, lb)
         if response_bytes > 0:
-            _response_size.record(response_bytes, lb)
+            instr["response_size"].record(response_bytes, lb)
     except Exception:
         logger.debug("Metric recording failed", exc_info=True)

@@ -33,28 +33,35 @@ class ErrorDetail(BaseModel):
 
 # --- Request/Response Models ---
 
-class GenericRequest(BaseModel):
-    """Generic request model for data operations."""
-    data: Dict[str, Any] = Field(
-        ...,
-        description="Request data payload",
-        json_schema_extra={'example': {"name": "example", "value": 123}}
-    )
+class ItemRequest(BaseModel):
+    """
+    Typed request for item create/update operations.
+    Replace these fields with your domain-specific schema.
+    """
+    name: str = Field(..., min_length=1, description="Item name")
+    description: Optional[str] = Field(None, description="Optional description")
     project_id: Optional[str] = Field(
-        default=None,
+        None,
         min_length=1,
-        description="The project ID for tracking and organization.",
-        json_schema_extra={'example': "my-project-123"}
+        description="Project identifier for grouping and tracking",
+        json_schema_extra={"example": "my-project-123"},
     )
+
 
 class ItemResponse(BaseResponse):
     """Response model for single item operations."""
     status: str = Field(..., description="Status of the operation")
     message: str = Field(..., description="Human-readable message about the operation")
-    data: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Item data"
-    )
+    data: Optional[Dict[str, Any]] = Field(default=None, description="Item data")
+
+
+class PaginatedItemsResponse(BaseModel):
+    """Paginated list response for item collections."""
+    items: list[Dict[str, Any]] = Field(..., description="Page of items")
+    total: int = Field(..., description="Total number of items across all pages")
+    limit: int = Field(..., description="Maximum items returned in this page")
+    offset: int = Field(..., description="Number of items skipped")
+    has_more: bool = Field(..., description="True when more items exist beyond this page")
 
 class HealthCheckResponse(BaseResponse):
     """Response model for health check."""

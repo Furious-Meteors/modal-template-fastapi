@@ -34,8 +34,9 @@ class FastAPIService:
         # Runs once per container after snapshot restore — never on the request hot path.
         # Network-bound setup (OTLP connections) must live here; they cannot survive
         # a snapshot because file descriptors and sockets are not portable across restores.
-        from src.observability import setup_telemetry
+        from src.infrastructure import record_cold_start, setup_telemetry
         setup_telemetry()
+        record_cold_start()  # fires against the real MeterProvider — always exported
 
     @modal.asgi_app()
     def fastapi_app(self):
@@ -48,7 +49,7 @@ class FastAPIService:
 def main():
     # Mirror what @enter does in the Modal container so telemetry works locally too.
     # The env vars above are already set; setup_telemetry() reads them at call time.
-    from src.observability import setup_telemetry
+    from src.infrastructure import setup_telemetry
     setup_telemetry()
     from src.main import app as fastapi_app
     from uvicorn import run

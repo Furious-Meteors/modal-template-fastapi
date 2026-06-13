@@ -7,48 +7,73 @@ from src.api.models import (
     ErrorDetail,
     FileUploadRequest,
     FileUploadResponse,
-    GenericRequest,
     HealthCheckResponse,
     HealthStatus,
+    ItemRequest,
     ItemResponse,
+    PaginatedItemsResponse,
     TokenPayload,
 )
 
 
 # ---------------------------------------------------------------------------
-# GenericRequest
+# ItemRequest
 # ---------------------------------------------------------------------------
 
 
-def test_generic_request_requires_data():
+def test_item_request_requires_name():
     with pytest.raises(ValidationError):
-        GenericRequest()  # type: ignore[call-arg]
+        ItemRequest()  # type: ignore[call-arg]
 
 
-def test_generic_request_valid():
-    req = GenericRequest(data={"key": "value"})
-    assert req.data == {"key": "value"}
+def test_item_request_valid():
+    req = ItemRequest(name="widget")
+    assert req.name == "widget"
+    assert req.description is None
     assert req.project_id is None
 
 
-def test_generic_request_with_project_id():
-    req = GenericRequest(data={}, project_id="proj-123")
+def test_item_request_with_all_fields():
+    req = ItemRequest(name="widget", description="a detail", project_id="proj-123")
+    assert req.description == "a detail"
     assert req.project_id == "proj-123"
 
 
-def test_generic_request_empty_data_allowed():
-    req = GenericRequest(data={})
-    assert req.data == {}
-
-
-def test_generic_request_nested_data():
-    req = GenericRequest(data={"nested": {"a": 1}})
-    assert req.data["nested"]["a"] == 1
-
-
-def test_generic_request_project_id_min_length():
+def test_item_request_name_min_length():
     with pytest.raises(ValidationError):
-        GenericRequest(data={}, project_id="")
+        ItemRequest(name="")
+
+
+def test_item_request_project_id_min_length():
+    with pytest.raises(ValidationError):
+        ItemRequest(name="x", project_id="")
+
+
+# ---------------------------------------------------------------------------
+# PaginatedItemsResponse
+# ---------------------------------------------------------------------------
+
+
+def test_paginated_response_valid():
+    resp = PaginatedItemsResponse(
+        items=[{"id": "1", "name": "widget"}],
+        total=1,
+        limit=10,
+        offset=0,
+        has_more=False,
+    )
+    assert resp.total == 1
+    assert resp.has_more is False
+
+
+def test_paginated_response_empty():
+    resp = PaginatedItemsResponse(items=[], total=0, limit=10, offset=0, has_more=False)
+    assert resp.items == []
+
+
+def test_paginated_response_has_more_true():
+    resp = PaginatedItemsResponse(items=[], total=20, limit=10, offset=0, has_more=True)
+    assert resp.has_more is True
 
 
 # ---------------------------------------------------------------------------
