@@ -157,7 +157,7 @@ Responsibilities:
 
 - Creates the `FastAPI` app with title, description, and version
 - Attaches `CORSMiddleware` allowing all origins (tighten in production)
-- Registers a global `RequestValidationError` handler that returns a structured `ErrorDetail` with `VALIDATION_ERROR` code
+- Registers the exception handlers from `src/api/errors.py`, so `AppError`, `HTTPException`, `RequestValidationError`, domain errors and unexpected failures all return the same flat `ErrorDetail` body
 - Mounts the API router under `/api/v1`
 - Logs startup/shutdown via the `lifespan` context manager
 
@@ -235,18 +235,27 @@ classDiagram
         +str detail
         +str session_id
         +str error_code
+        +list~FieldError~ errors
+    }
+    class FieldError {
+        +str field
+        +str message
+        +str type
     }
     class TokenPayload {
         +str sub
         +int exp
         +int iat
+        +list~str~ scopes
     }
 
     BaseResponse <|-- ItemResponse
     BaseResponse <|-- HealthCheckResponse
 ```
 
-All responses carry a unique `session_id` (UUID v4 generated per request) for distributed tracing and support correlation.
+All responses carry a unique `session_id` (UUID v4) for distributed tracing and support correlation. `TelemetryMiddleware` generates it once per request and stores it on `request.state.session_id`; routes and error handlers read it from there, so the body `session_id`, the `x-session-id` header and the span attribute are always the same value.
+
+Every error uses one flat shape — `{"detail", "session_id", "error_code"}` plus an `errors` list of `{field, message, type}` for validation failures. Raise `AppError(status_code, error_code, message)` from routes and dependencies.
 
 ---
 

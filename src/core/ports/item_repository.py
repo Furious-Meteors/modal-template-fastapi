@@ -10,6 +10,10 @@ Adding a new persistence backend:
   1. Create src/adapters/persistence/<your_backend>.py
   2. Implement a class with these methods (no import of this file needed)
   3. Wire it in src/deps.py
+
+Name uniqueness: ItemService checks get_by_name() before create/update, which is
+not atomic. Real database adapters should also enforce it with a unique index
+(on the normalised name) and surface violations as DuplicateItemNameError.
 """
 from __future__ import annotations
 
@@ -21,6 +25,9 @@ from src.core.domain.item import Item
 @runtime_checkable
 class ItemRepository(Protocol):
     async def get(self, item_id: str) -> Optional[Item]: ...
+    async def get_by_name(self, name: str) -> Optional[Item]:
+        """Return the item whose name matches, ignoring case and surrounding whitespace."""
+        ...
     async def list(self, limit: int, offset: int) -> Tuple[List[Item], int]: ...
     async def create(self, item: Item) -> Item: ...
     async def update(self, item: Item) -> Optional[Item]: ...

@@ -128,17 +128,17 @@ Both are read from the environment at call time (not at import time), making the
 
 ## Error Responses
 
-Every auth failure returns a consistent `ErrorDetail` envelope:
+Every auth failure returns the same flat `ErrorDetail` body used by all other errors in the API:
 
 ```json
 {
-  "detail": {
-    "detail": "Token has expired",
-    "session_id": "550e8400-e29b-41d4-a716-446655440000",
-    "error_code": "TOKEN_EXPIRED"
-  }
+  "detail": "Token has expired",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "error_code": "TOKEN_EXPIRED"
 }
 ```
+
+`session_id` always equals the `x-session-id` response header.
 
 | Scenario | HTTP | `error_code` |
 |---|---|---|
@@ -147,6 +147,8 @@ Every auth failure returns a consistent `ErrorDetail` envelope:
 | Token `exp` is in the past | `401` | `TOKEN_EXPIRED` |
 | Bad signature / malformed token | `401` | `INVALID_TOKEN` |
 | Wrong algorithm | `401` | `INVALID_TOKEN` |
+| Missing `exp` or `sub`, wrong `aud`/`iss` (when configured), malformed `scopes` | `401` | `INVALID_TOKEN` |
+| Valid token missing a required scope | `403` | `INSUFFICIENT_SCOPE` |
 
 All `401` responses also include `WWW-Authenticate: Bearer` header per RFC 6750.
 

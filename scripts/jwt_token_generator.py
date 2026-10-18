@@ -13,6 +13,12 @@ def get_jwt_token(secret: str, scopes: list[str] = None) -> str:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--secret", type=str, required=True)
-    parser.add_argument("--scopes", type=str, required=False)
+    parser.add_argument(
+        "--scopes",
+        type=str,
+        required=False,
+        help="Comma-separated scopes (default: items:read,items:write)",
+    )
     args = parser.parse_args()
-    print(get_jwt_token(args.secret))
+    scopes = [s.strip() for s in args.scopes.split(",") if s.strip()] if args.scopes else None
+    print(get_jwt_token(args.secret, scopes))

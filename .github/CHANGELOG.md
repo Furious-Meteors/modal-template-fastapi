@@ -11,7 +11,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added (streaming)
+- Server-Sent Events (`GET /events/stream`), WebSocket (`POST /ws/ticket`, `WS /ws`) and signed webhook ingestion (`POST /webhooks/{provider}`, generic HMAC-SHA256 with timestamp tolerance and idempotency) — see `docs/api/streaming.md`
+- `EventBus` and `WebhookEventStore` ports with in-memory adapters; `ItemService` publishes `item.created` / `item.updated` / `item.deleted`
+- `events:read` scope; WebSocket tickets are short-lived single-purpose JWTs with their own audience
+- `EnvConfig.max_streams` (validated `< max_concurrent_requests`) and `stream_timeout_margin_seconds`; streams are capped per container and end themselves before the Modal timeout
+- Stream and webhook metrics (`stream.connections.active/closed`, `stream.messages.sent`, `webhook.received`) and one span per WebSocket connection
+
+### Changed (streaming)
+- `TelemetryMiddleware` is now a pure ASGI middleware (was `BaseHTTPMiddleware`) so streaming responses are unbuffered and WebSockets are supported; the in-flight gauge is labelled by method only
+- Metric `route` labels resolve through `scope["route"]`, fixing raw-URL labels on included routers (unbounded cardinality) and collapsing unmatched paths to `unmatched`
+
 ### Changed
+- **Breaking:** all error responses now share one flat body — `{"detail": str, "session_id": str, "error_code": str}` plus an `errors` list for validation failures. Auth errors previously nested this under `detail`, and 404s were a bare string
+- **Breaking:** `GET /items` and `GET /items/{id}` now require the `items:read` scope (previously any valid token)
+- **Breaking:** `get_current_user` / `require_scope` now return a `TokenPayload` model instead of a dict
+- Response-body `session_id` now equals the `x-session-id` header (generated once in `TelemetryMiddleware`, read from `request.state.session_id`)
+- JWT verification requires `exp` and `sub`, optionally enforces `JWT_AUDIENCE` / `JWT_ISSUER`, and validates claims into `TokenPayload` (now includes `scopes`)
+- `dev` no longer mounts the `grafana-otlp` secret; telemetry is gated by `EnvConfig.telemetry_enabled` and `TELEMETRY_ENABLED`
+- `GET /items` validates `limit` (1–500) and `offset` (>= 0)
+- Startup now validates `JWT_SECRET` (min 32 chars) and the persistence backend, so bad config stops the container instead of failing the first request
+- Item names must be unique (case/whitespace-insensitive); duplicates return `409 ITEM_NAME_EXISTS`
 - `EnvConfig` in `modal_common.py` now centralizes app and server metadata (`app_version`, `app_description`, `server_host`, `server_port`, `server_prefix`) and adds `max_concurrent_requests`
 - Deployment wiring in `modal_app.py` now uses `@modal.concurrent(max_inputs=env_config.max_concurrent_requests)` and local `uvicorn` startup reads host/port from environment config
 - FastAPI app metadata and API prefix in `src/main.py` now come from environment config instead of hardcoded values
@@ -19,10 +39,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Modal environment domain field renamed from `custom_domain` to `server_domain` across environment definitions
 
 ### Added
+- `src/api/errors.py`: `AppError`, `get_session_id` and `register_exception_handlers` (handles `AppError`, `HTTPException`, `RequestValidationError`, `DuplicateItemNameError` and unexpected exceptions)
+- `FieldError` model and `ErrorDetail.errors`; new codes `ITEM_NOT_FOUND`, `NOT_FOUND`, `METHOD_NOT_ALLOWED`, `INTERNAL_ERROR`
+- Startup warning when `PERSISTENCE_BACKEND=memory` and `MODAL_ENV=prod`
 - Dedicated CI dependency files: `.github/requirements/test.txt` and `.github/requirements/docs.txt`
 - Lightweight `modal` module stub in `tests/conftest.py` so tests can run in local/CI contexts where `modal` is not installed
 
 ### Fixed
+- `scripts/jwt_token_generator.py` now honours `--scopes` (comma-separated)
 - GitHub workflows now install dependencies from repository-scoped requirement files (`.github/workflows/app-testing.yml`, `.github/workflows/docs.yml`)
 - Health endpoint test expectation updated to validate the environment-aware service name format
 
