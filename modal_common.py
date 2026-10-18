@@ -83,6 +83,7 @@ class EnvConfig:
     cors_origins: List[str] = field(default_factory=lambda: ["*"])
 
     # OBSERVABILITY — set in prod preset only; None = telemetry disabled (feat/dev)
+    telemetry_enabled: bool = True       # False = no OTLP export and no grafana-otlp secret mounted
     otel_endpoint: Optional[str] = None  # Grafana Cloud OTLP base URL
     service_name:  Optional[str] = None  # defaults to app_name when None
 
@@ -102,10 +103,10 @@ DEV = EnvConfig(
     env_name="dev",
     server_domain="dev-app.modal.run",
     cors_origins=["*"],  # TODO: replace with your actual Modal domain when known
-    otel_endpoint=None,  # no telemetry in dev — keeps cost at zero
+    telemetry_enabled=False,  # dev is silent — keeps cost at zero
+    otel_endpoint=None,
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
-        modal.Secret.from_name("grafana-otlp"),
     ],
 )
 
@@ -139,9 +140,13 @@ def get_env_config(env_name: str) -> EnvConfig:
     return ENV_CONFIGS[env_name]
 
 def configure_env_vars(env: EnvConfig) -> None:
-    _otlp_endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT") or env.otel_endpoint
-    if _otlp_endpoint:
-        os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", _otlp_endpoint)
+    # Read by src/infrastructure/setup.py — "false" forces the no-op providers
+    # even if an OTLP endpoint happens to be present in the environment.
+    os.environ["TELEMETRY_ENABLED"] = "true" if env.telemetry_enabled else "false"
+    if env.telemetry_enabled:
+        _otlp_endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT") or env.otel_endpoint
+        if _otlp_endpoint:
+            os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", _otlp_endpoint)
     os.environ.setdefault("OTEL_SERVICE_NAME", env.service_name or env.app_name)
     os.environ.setdefault("MODAL_ENV", env.env_name)
     # App metadata — read by src/config.py so src/ never imports modal_common directly

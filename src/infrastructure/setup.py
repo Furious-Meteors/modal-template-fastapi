@@ -78,10 +78,12 @@ def setup_telemetry() -> None:
     resource  = _build_resource()
     headers   = _grafana_headers()
 
-    if not endpoint:
+    enabled = os.environ.get("TELEMETRY_ENABLED", "true").strip().lower() != "false"
+
+    if not enabled or not endpoint:
         logger.debug(
-            "OTEL_EXPORTER_OTLP_ENDPOINT not set — telemetry disabled. "
-            "Set it in your Modal Secret to enable."
+            "Telemetry disabled (TELEMETRY_ENABLED=false or OTEL_EXPORTER_OTLP_ENDPOINT "
+            "not set). Set the endpoint in your Modal Secret to enable."
         )
         # Still set no-op providers so get_meter() / get_tracer() calls
         # in metrics.py don't raise AttributeErrors at runtime.

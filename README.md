@@ -250,7 +250,7 @@ Telemetry is a **sidecar** — domain and adapters have zero OTel knowledge. Two
 | Log correlation | Every log line carries `otelTraceID` + `otelSpanID` |
 | W3C trace propagation | Incoming `traceparent` headers respected — spans become children of upstream traces |
 
-**Environment strategy:** `feat` and `prod` push telemetry; `dev` is silent (zero cost). Controlled by the `grafana-otlp` Modal Secret — no code changes needed.
+**Environment strategy:** `feat` and `prod` push telemetry; `dev` is silent (zero cost). Controlled by `EnvConfig.telemetry_enabled` — `dev` sets it to `False`, which skips mounting the `grafana-otlp` Modal Secret and forces no-op telemetry providers (`TELEMETRY_ENABLED=false`).
 
 **One-time Grafana Cloud setup:**
 ```bash
