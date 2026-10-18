@@ -40,6 +40,14 @@ _REQUIRED_ENV: dict[str, list[str]] = {
 }
 
 
+# Event bus backends — same fail-fast rules as persistence.
+_REQUIRED_EVENT_BUS_ENV: dict[str, list[str]] = {
+    "memory": [],
+    # "modal_queue": [],                # Modal Queue/Dict — shared across containers
+    # "redis":       ["REDIS_URL"],
+}
+
+
 def _validate_backend(backend: str) -> None:
     if backend not in _REQUIRED_ENV:
         raise ValueError(
@@ -86,6 +94,48 @@ def _get_repository():
     return TracingProxy(raw, prefix="repository.item")
 
 
+@lru_cache(maxsize=1)
+def _get_event_bus():
+    """
+    Process-wide event bus used by the item service and the streaming endpoints.
+    Same seam as the repository: add a branch per backend below.
+    """
+    backend = os.environ.get("EVENT_BUS_BACKEND", "memory")
+    if backend not in _REQUIRED_EVENT_BUS_ENV:
+        raise ValueError(
+            f"Unknown EVENT_BUS_BACKEND='{backend}'. "
+            f"Known backends: {', '.join(_REQUIRED_EVENT_BUS_ENV)}. "
+            f"Add an adapter in src/adapters/events/ and register it here."
+        )
+    missing = [v for v in _REQUIRED_EVENT_BUS_ENV[backend] if not os.environ.get(v)]
+    if missing:
+        raise EnvironmentError(
+            f"EVENT_BUS_BACKEND='{backend}' requires env vars that are not set: "
+            f"{', '.join(missing)}"
+        )
+
+    if backend == "memory":
+        from src.adapters.events.memory import InMemoryEventBus
+        raw = InMemoryEventBus()
+
+    # ── Add new backends here ───────────────────────────────────────────────
+    # elif backend == "modal_queue":
+    #     from src.adapters.events.modal_queue import ModalQueueEventBus
+    #     raw = ModalQueueEventBus()   # must satisfy src/core/ports/event_bus.py
+    # ────────────────────────────────────────────────────────────────────────
+    else:
+        raise ValueError(f"Backend '{backend}' is registered but has no factory. Add one above.")
+
+    return TracingProxy(raw, prefix="event_bus")
+
+
+@lru_cache(maxsize=1)
+def _get_webhook_store():
+    # Shares EVENT_BUS_BACKEND's lifecycle: the in-memory store is per-process too.
+    from src.adapters.events.memory import InMemoryWebhookStore
+    return InMemoryWebhookStore()
+
+
 def init_dependencies() -> None:
     """
     Eagerly build and validate everything the request path needs.
@@ -95,6 +145,14 @@ def init_dependencies() -> None:
     """
     backend = os.environ.get("PERSISTENCE_BACKEND", "memory")
     _get_repository()
+    _get_event_bus()
+    _get_webhook_store()
+    if os.environ.get("EVENT_BUS_BACKEND", "memory") == "memory" and os.environ.get("MODAL_ENV") == "prod":
+        logger.warning(
+            "EVENT_BUS_BACKEND=memory in prod: SSE/WebSocket streams only see events "
+            "published on their own container, and webhook de-duplication is per "
+            "container. Use a shared event-bus adapter before scaling out."
+        )
     if backend == "memory" and os.environ.get("MODAL_ENV") == "prod":
         logger.warning(
             "PERSISTENCE_BACKEND=memory in prod: each container keeps its own "
@@ -103,6 +161,16 @@ def init_dependencies() -> None:
         )
 
 
+def get_event_bus():
+    """FastAPI dependency — the process-wide EventBus."""
+    return _get_event_bus()
+
+
+def get_webhook_store():
+    """FastAPI dependency — the webhook idempotency store."""
+    return _get_webhook_store()
+
+
 def get_item_service() -> ItemService:
     """FastAPI dependency — injected into routes via Depends(get_item_service)."""
-    return ItemService(_get_repository())
+    return ItemService(_get_repository(), _get_event_bus())
