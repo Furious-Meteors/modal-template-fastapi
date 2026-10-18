@@ -2,7 +2,7 @@
 
 import uuid
 from typing import Dict, Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from enum import Enum
 
 class HealthStatus(str, Enum):
@@ -59,6 +59,14 @@ class ItemRequest(BaseModel):
         json_schema_extra={"example": "my-project-123"},
     )
 
+    @field_validator("name")
+    @classmethod
+    def _strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("name must not be blank")
+        return value
+
 
 class ItemResponse(BaseResponse):
     """Response model for single item operations."""
@@ -91,38 +99,14 @@ class HealthCheckResponse(BaseResponse):
 class TokenPayload(BaseModel):
     """Decoded JWT token payload."""
     sub: str = Field(..., description="Subject — typically a user ID or email")
-    exp: int = Field(..., description="Expiry timestamp (Unix epoch)")
+    exp: int = Field(..., description="Expiry timestamp (Unix epoch; fractional seconds are truncated)")
     iat: Optional[int] = Field(default=None, description="Issued-at timestamp (Unix epoch)")
     scopes: list[str] = Field(default_factory=list, description="Granted authorisation scopes")
 
-# --- File Upload Models ---
-
-class FileUploadRequest(BaseModel):
-    """Request model for file upload operations."""
-    project_id: str = Field(
-        ...,
-        min_length=1,
-        description="The project ID for tracking and organization.",
-        json_schema_extra={'example': "my-project-123"}
-    )
-    filename: Optional[str] = Field(
-        default=None,
-        description="Optional custom filename for the uploaded file"
-    )
-
-class FileUploadResponse(BaseResponse):
-    """Response model for file upload operations."""
-    status: str = Field(..., description="Status of the operation")
-    message: str = Field(..., description="Human-readable message about the operation")
-    file_id: Optional[str] = Field(
-        default=None,
-        description="ID of the uploaded file"
-    )
-    file_size: Optional[int] = Field(
-        default=None,
-        description="Size of the uploaded file in bytes"
-    )
-    file_path: Optional[str] = Field(
-        default=None,
-        description="Local path where the file was saved"
-    )
+    @field_validator("exp", "iat", mode="before")
+    @classmethod
+    def _truncate_float_timestamps(cls, value):
+        # RFC 7519 NumericDate may be fractional; some issuers emit floats.
+        if isinstance(value, float) and value == value:
+            return int(value)
+        return value

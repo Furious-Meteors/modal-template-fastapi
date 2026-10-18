@@ -11,6 +11,7 @@ from src.api.models import TokenPayload
 _bearer = HTTPBearer(auto_error=False)
 
 MIN_SECRET_LENGTH = 32
+ALLOWED_ALGORITHMS = frozenset({"HS256", "HS384", "HS512"})
 
 
 def _get_secret_key() -> str:
@@ -31,6 +32,12 @@ def validate_auth_config() -> None:
     as a 500 on the first authenticated request.
     """
     key = _get_secret_key()  # raises RuntimeError when missing/empty
+    algorithm = _get_algorithm()
+    if algorithm not in ALLOWED_ALGORITHMS:
+        raise RuntimeError(
+            f"JWT_ALGORITHM='{algorithm}' is not supported; "
+            f"use one of: {', '.join(sorted(ALLOWED_ALGORITHMS))}"
+        )
     if len(key) < MIN_SECRET_LENGTH:
         raise RuntimeError(
             f"JWT_SECRET must be at least {MIN_SECRET_LENGTH} characters long "

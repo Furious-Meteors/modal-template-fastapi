@@ -22,6 +22,10 @@ class ItemService:
     def __init__(self, repo: ItemRepository) -> None:
         self._repo = repo
 
+    # The get_by_name pre-checks below give a friendly error but are not atomic.
+    # Repositories backed by a real database must enforce uniqueness themselves
+    # and raise DuplicateItemNameError; it propagates to the 409 handler as-is.
+
     async def create(
         self,
         name: str,

@@ -9,7 +9,7 @@ from src.api.errors import register_exception_handlers
 from src.api.routes import router
 from src.adapters.http.middleware import TelemetryMiddleware
 from src.deps import init_dependencies
-from src.utils.config import APP_DESCRIPTION, APP_VERSION, CORS_ORIGINS, SERVER_PREFIX, SERVICE_TITLE
+from src.utils.config import APP_DESCRIPTION, APP_ENV, APP_VERSION, CORS_ORIGINS, SERVER_PREFIX, SERVICE_TITLE
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,6 +20,8 @@ async def lifespan(app: FastAPI):
     # Fail fast: a misconfigured container should not start serving.
     validate_auth_config()
     init_dependencies()
+    if "*" in CORS_ORIGINS and APP_ENV == "prod":
+        logger.warning("CORS_ORIGINS='*' in prod: set EnvConfig.cors_origins to your real origins.")
     logger.info(f"Starting {SERVICE_TITLE}")
     yield
     logger.info(f"Shutting down {SERVICE_TITLE}")
@@ -35,7 +37,9 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,   # set per-env via EnvConfig.cors_origins → CORS_ORIGINS env var
-    allow_credentials=True,
+    # Auth is a Bearer header, not cookies, so credentialed CORS is never needed;
+    # it is also invalid alongside a wildcard origin.
+    allow_credentials="*" not in CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

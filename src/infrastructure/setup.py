@@ -1,6 +1,6 @@
 """
-src/observability/setup.py
-==========================
+src/infrastructure/setup.py
+===========================
 OpenTelemetry SDK bootstrap. Call setup_telemetry() once inside
 the Modal @enter hook — never at module import time.
 
@@ -67,13 +67,6 @@ def setup_telemetry() -> None:
     if _INITIALISED:
         return
 
-    # ── Startup diagnostic — remove once telemetry is confirmed working ──
-    _instance_id = os.environ.get("GRAFANA_INSTANCE_ID", "")
-    _token       = os.environ.get("GRAFANA_OTLP_TOKEN", "")
-    _grf_ep      = os.environ.get("GRAFANA_OTLP_ENDPOINT", "")
-    _otlp_ep     = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-    # ─────────────────────────────────────────────────────────────────────
-
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
     resource  = _build_resource()
     headers   = _grafana_headers()
@@ -85,8 +78,8 @@ def setup_telemetry() -> None:
             "Telemetry disabled (TELEMETRY_ENABLED=false or OTEL_EXPORTER_OTLP_ENDPOINT "
             "not set). Set the endpoint in your Modal Secret to enable."
         )
-        # Still set no-op providers so get_meter() / get_tracer() calls
-        # in metrics.py don't raise AttributeErrors at runtime.
+        # Still install exporter-less SDK providers so get_meter() / get_tracer()
+        # calls work and nothing is ever exported.
         trace.set_tracer_provider(TracerProvider(resource=resource))
         metrics.set_meter_provider(MeterProvider(resource=resource))
         _INITIALISED = True

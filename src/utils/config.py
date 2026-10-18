@@ -1,6 +1,6 @@
 """
-src/config.py
-=============
+src/utils/config.py
+===========================
 Application-level config read exclusively from environment variables.
 
 All values here are set by modal_common.configure_env_vars() before src/ is
@@ -13,9 +13,9 @@ import os
 
 APP_NAME        = os.environ.get("APP_NAME", "modal-template-fastapi")
 APP_ENV         = os.environ.get("MODAL_ENV", "dev")
-APP_VERSION     = os.environ.get("APP_VERSION", "2.0.0")
+APP_VERSION     = os.environ.get("APP_VERSION", "1.0.0")
 APP_DESCRIPTION = os.environ.get("APP_DESCRIPTION", "A FastAPI template deployed on Modal with CRUD endpoints.")
 SERVER_PREFIX   = os.environ.get("SERVER_PREFIX", "/api/v1")
-CORS_ORIGINS    = os.environ.get("CORS_ORIGINS", "*").split(",")
+CORS_ORIGINS    = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 
 SERVICE_TITLE = f"{APP_NAME}-{APP_ENV}"

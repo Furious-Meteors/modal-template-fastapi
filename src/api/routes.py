@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Query, status
+import logging
+
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from src.api.auth import require_scope
 from src.api.errors import AppError, get_session_id
@@ -15,6 +17,8 @@ from src.core.services.item_service import ItemService
 from src.deps import get_item_service
 from src.utils.config import APP_ENV, APP_NAME, APP_VERSION
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 MAX_PAGE_SIZE = 500
@@ -25,13 +29,30 @@ def _item_not_found(item_id: str) -> AppError:
 
 
 @router.get("/health", response_model=HealthCheckResponse, tags=["Health"])
-async def health_check(session_id: str = Depends(get_session_id)):
+async def health_check(
+    response: Response,
+    service: ItemService = Depends(get_item_service),
+    session_id: str = Depends(get_session_id),
+):
+    # Real dependency check: a cheap read through the persistence adapter.
+    try:
+        await service.list(limit=1, offset=0)
+        repo_ok = True
+    except Exception:
+        logger.exception("Health check: persistence backend failed")
+        repo_ok = False
+    if not repo_ok:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return HealthCheckResponse(
         session_id=session_id,
-        status=HealthStatus.HEALTHY,
+        status=HealthStatus.HEALTHY if repo_ok else HealthStatus.UNHEALTHY,
         service_name=f"{APP_NAME}-{APP_ENV}",
         version=APP_VERSION,
-        services_summary={"total": 1, "healthy": 1, "unhealthy": 0},
+        services_summary={
+            "total": 1,
+            "healthy": int(repo_ok),
+            "unhealthy": int(not repo_ok),
+        },
     )
 
 
@@ -101,6 +122,11 @@ async def create_item(
     "/items/{item_id}",
     response_model=ItemResponse,
     tags=["Items"],
+    summary="Replace an item",
+    description=(
+        "Full replacement (PUT semantics): `name` is required and any optional "
+        "field omitted from the body — `description`, `project_id` — is cleared."
+    ),
     responses={409: {"model": ErrorDetail, "description": "Item name already exists"}},
 )
 async def update_item(
