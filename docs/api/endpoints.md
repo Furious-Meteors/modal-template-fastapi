@@ -100,11 +100,9 @@ Returns the full array of stored items. Returns an empty array `[]` when no item
     ```bash
     curl -s "$BASE_URL/items" | jq .
     # {
-    #   "detail": {
-    #     "detail": "Authorization header missing or malformed",
-    #     "session_id": "...",
-    #     "error_code": "MISSING_TOKEN"
-    #   }
+    #   "detail": "Authorization header missing or malformed",
+    #   "session_id": "...",
+    #   "error_code": "MISSING_TOKEN"
     # }
     ```
 

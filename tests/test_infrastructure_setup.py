@@ -316,3 +316,19 @@ def test_setup_telemetry_metric_export_interval_default(monkeypatch):
         setup_mod.setup_telemetry()
     _, kwargs = mock_reader_cls.call_args
     assert kwargs.get("export_interval_millis") == 15000
+
+
+def test_setup_telemetry_disabled_flag_skips_exporters_even_with_endpoint(monkeypatch):
+    """TELEMETRY_ENABLED=false wins over a present OTLP endpoint (dev preset)."""
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+    monkeypatch.setenv("TELEMETRY_ENABLED", "false")
+    import src.infrastructure.setup as setup_mod
+    from unittest.mock import patch, MagicMock
+    span_cls = MagicMock()
+    metric_cls = MagicMock()
+    with patch("src.infrastructure.setup.OTLPSpanExporter", span_cls), \
+         patch("src.infrastructure.setup.OTLPMetricExporter", metric_cls):
+        setup_mod.setup_telemetry()
+    span_cls.assert_not_called()
+    metric_cls.assert_not_called()
+    assert setup_mod._INITIALISED is True

@@ -56,17 +56,10 @@ def test_x_session_id_looks_like_uuid(client: TestClient):
     assert re.match(uuid_pattern, session_id), f"Not a UUID: {session_id}"
 
 
-def test_x_session_id_consistent_with_body_session_id_on_health(client: TestClient):
-    """
-    The health endpoint puts its own session_id in the body.
-    The middleware generates a separate x-session-id header.
-    Both should be present and be valid UUIDs — they may differ.
-    """
+def test_x_session_id_matches_body_session_id_on_health(client: TestClient):
+    """The body session_id comes from request.state, set once by the middleware."""
     response = client.get("/api/v1/health")
-    body_session_id   = response.json()["session_id"]
-    header_session_id = response.headers["x-session-id"]
-    assert body_session_id
-    assert header_session_id
+    assert response.json()["session_id"] == response.headers["x-session-id"]
 
 
 # ---------------------------------------------------------------------------
@@ -203,3 +196,71 @@ def test_each_request_gets_distinct_session_id(client: TestClient):
     """Five sequential requests must produce five distinct session IDs."""
     ids = {client.get("/api/v1/health").headers["x-session-id"] for _ in range(5)}
     assert len(ids) == 5
+
+
+# ---------------------------------------------------------------------------
+# Metric label cardinality / in-flight gauge
+# ---------------------------------------------------------------------------
+
+
+def _route_labels(monkeypatch) -> list[str]:
+    from src.adapters.http import middleware
+
+    seen: list[str] = []
+    real = middleware._record
+
+    def spy(instr, method, route, *args):
+        seen.append(route)
+        return real(instr, method, route, *args)
+
+    monkeypatch.setattr(middleware, "_record", spy)
+    return seen
+
+
+def test_unmatched_paths_share_one_route_label(client: TestClient, monkeypatch):
+    seen = _route_labels(monkeypatch)
+    client.get("/scanner/probe-1")
+    client.get("/scanner/probe-2")
+    assert seen == ["unmatched", "unmatched"]
+
+
+def test_path_params_resolve_to_template_in_metric_label(client: TestClient, monkeypatch):
+    seen = _route_labels(monkeypatch)
+    client.get("/api/v1/items/abc")
+    client.get("/api/v1/items/xyz")
+    client.get("/api/v1/health")
+    client.get("/docs")
+    assert seen == [
+        "/api/v1/items/{item_id}",
+        "/api/v1/items/{item_id}",
+        "/api/v1/health",
+        "/docs",
+    ]
+
+
+def test_active_requests_decremented_when_handler_raises(client: TestClient, monkeypatch):
+    from src.adapters.http import middleware
+
+    calls: list[int] = []
+
+    class _Gauge:
+        def add(self, value, labels=None):
+            calls.append(value)
+
+    instr = dict(middleware._get_instruments())
+    instr["active_requests"] = _Gauge()
+    monkeypatch.setattr(middleware, "_instruments", instr)
+
+    from fastapi.testclient import TestClient as TC
+    from src.main import app
+
+    @app.get("/__boom")
+    async def _boom():
+        raise RuntimeError("boom")
+
+    try:
+        with TC(app, raise_server_exceptions=False) as c:
+            assert c.get("/__boom").status_code == 500
+    finally:
+        app.router.routes = [r for r in app.router.routes if getattr(r, "path", "") != "/__boom"]
+    assert calls == [1, -1]

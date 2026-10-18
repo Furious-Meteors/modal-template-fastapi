@@ -14,24 +14,29 @@ APT_PACKAGES: List[str] = [
 ]
 
 PIP_PACKAGES: List[str] = [
-    "fastapi",
-    "uvicorn[standard]",
-    "websockets",
-    "pydantic",
-    "PyJWT",
+    # Pinned for reproducible deploys — bump deliberately and re-run the test suite.
+    "fastapi==0.143.5",
+    "uvicorn[standard]==0.54.0",
+    "websockets==17.2",
+    "pydantic==2.14.1",
+    "PyJWT==2.15.1",
     # OpenTelemetry — OTLP/HTTP push to Grafana Cloud (or any OTLP-compatible backend)
-    "opentelemetry-sdk>=1.24",
-    "opentelemetry-exporter-otlp-proto-http>=1.24",
-    "opentelemetry-semantic-conventions>=0.45b0",
+    "opentelemetry-sdk==1.45.1",
+    "opentelemetry-exporter-otlp-proto-http==1.45.1",
+    "opentelemetry-semantic-conventions==0.66b1",
     # Injects otelTraceID/otelSpanID into every LogRecord for log-trace correlation
-    "opentelemetry-instrumentation-logging>=0.45b0",
+    "opentelemetry-instrumentation-logging==0.66b1",
 ]
 
 cpu_image = (
     modal.Image.debian_slim(python_version="3.11")
     .apt_install(*APT_PACKAGES)
     .uv_pip_install(*PIP_PACKAGES)
-    .add_local_dir(".", remote_path="/root")
+    .add_local_dir(
+        ".",
+        remote_path="/root",
+        ignore=[".git", ".github", ".venv", "venv", "**/__pycache__", ".pytest_cache", "tests", "docs", "scripts"],
+    )
 )
 
 # ---------------------------------------------------------------------------
@@ -67,7 +72,7 @@ class EnvConfig:
 
     # HARDWARE CONFIGURATION
     cpu_core_count: int = 1
-    ram_memory_mib: int = 256
+    ram_memory_mib: int = 512
     gpu_type: Optional[str] = None
 
     # RUNTIME CONFIGURATION
@@ -83,6 +88,7 @@ class EnvConfig:
     cors_origins: List[str] = field(default_factory=lambda: ["*"])
 
     # OBSERVABILITY — set in prod preset only; None = telemetry disabled (feat/dev)
+    telemetry_enabled: bool = True       # False = no OTLP export and no grafana-otlp secret mounted
     otel_endpoint: Optional[str] = None  # Grafana Cloud OTLP base URL
     service_name:  Optional[str] = None  # defaults to app_name when None
 
@@ -102,10 +108,10 @@ DEV = EnvConfig(
     env_name="dev",
     server_domain="dev-app.modal.run",
     cors_origins=["*"],  # TODO: replace with your actual Modal domain when known
-    otel_endpoint=None,  # no telemetry in dev — keeps cost at zero
+    telemetry_enabled=False,  # dev is silent — keeps cost at zero
+    otel_endpoint=None,
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
-        modal.Secret.from_name("grafana-otlp"),
     ],
 )
 
@@ -139,12 +145,16 @@ def get_env_config(env_name: str) -> EnvConfig:
     return ENV_CONFIGS[env_name]
 
 def configure_env_vars(env: EnvConfig) -> None:
-    _otlp_endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT") or env.otel_endpoint
-    if _otlp_endpoint:
-        os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", _otlp_endpoint)
+    # Read by src/infrastructure/setup.py — "false" forces the no-op providers
+    # even if an OTLP endpoint happens to be present in the environment.
+    os.environ["TELEMETRY_ENABLED"] = "true" if env.telemetry_enabled else "false"
+    if env.telemetry_enabled:
+        _otlp_endpoint = os.environ.get("GRAFANA_OTLP_ENDPOINT") or env.otel_endpoint
+        if _otlp_endpoint:
+            os.environ.setdefault("OTEL_EXPORTER_OTLP_ENDPOINT", _otlp_endpoint)
     os.environ.setdefault("OTEL_SERVICE_NAME", env.service_name or env.app_name)
     os.environ.setdefault("MODAL_ENV", env.env_name)
-    # App metadata — read by src/config.py so src/ never imports modal_common directly
+    # App metadata — read by src/utils/config.py so src/ never imports modal_common directly
     os.environ.setdefault("APP_NAME", env.app_name)
     os.environ.setdefault("APP_VERSION", env.app_version)
     os.environ.setdefault("APP_DESCRIPTION", env.app_description)

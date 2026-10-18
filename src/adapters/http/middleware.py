@@ -49,6 +49,7 @@ from starlette.responses import Response
 from starlette.routing import Match
 
 from src.infrastructure.setup import get_meter, get_tracer
+from src.utils.config import SERVER_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,8 @@ logger = logging.getLogger(__name__)
 # that exists at snapshot / import time.
 
 _instruments: dict | None = None
+
+UNMATCHED_ROUTE = "unmatched"
 
 
 def _get_instruments() -> dict:
@@ -100,15 +103,25 @@ def _get_instruments() -> dict:
 def _route_template(request: Request) -> str:
     """
     Return the matched route pattern, e.g. '/api/v1/items/{item_id}'.
-    Falls back to raw path on 404/unmatched routes.
-    Using the template (not raw path) prevents metric cardinality explosion
-    from path params like /items/1 /items/2 /items/3 …
+
+    Must be called AFTER the request has been handled: FastAPI records the
+    matched APIRoute in scope["route"] (without the include_router prefix, which
+    is re-attached here). Plain Starlette routes such as /docs are found by
+    matching. Everything else — 404s, scanners probing arbitrary URLs — shares
+    the fixed label UNMATCHED_ROUTE, so metric cardinality is bounded by the
+    number of real routes rather than by what clients send.
     """
+    matched = request.scope.get("route")
+    path = getattr(matched, "path", None)
+    if path:
+        if SERVER_PREFIX and request.url.path.startswith(SERVER_PREFIX):
+            return f"{SERVER_PREFIX}{path}"
+        return path
     for route in request.app.routes:
-        match, _ = route.matches(request.scope)
-        if match == Match.FULL:
-            return getattr(route, "path", request.url.path)
-    return request.url.path
+        route_path = getattr(route, "path", None)
+        if route_path and route.matches(request.scope)[0] == Match.FULL:
+            return route_path
+    return UNMATCHED_ROUTE
 
 
 def _labels(method: str, route: str, status: int) -> dict[str, str]:
@@ -134,95 +147,124 @@ class TelemetryMiddleware(BaseHTTPMiddleware):
         request: Request,
         call_next: RequestResponseEndpoint,
     ) -> Response:
+        # Instrumentation must never fail a request: fall back to no-op stand-ins.
+        try:
+            instr = _get_instruments()
+        except Exception:
+            logger.debug("Telemetry instruments unavailable", exc_info=True)
+            instr = _NOOP_INSTRUMENTS
         tracer  = get_tracer()
-        instr   = _get_instruments()
-        route   = _route_template(request)
         method  = request.method
         t_start = time.perf_counter()
-        # Generate once per request so the span always has a non-empty session_id.
-        # setdefault below lets a route override this with its own value if it sets
-        # the x-session-id header explicitly — the middleware value is the fallback.
+        # Single source of truth for the request's session ID. Routes and error
+        # handlers read it from request.state.session_id, so the response body,
+        # the x-session-id header and the span attribute always agree.
         req_session_id = str(uuid.uuid4())
+        request.state.session_id = req_session_id
+        # The route is only known once the handler has run, so the gauge is per-method.
+        active_labels = {"method": method}
 
         # ── In-flight gauge ───────────────────────────────────────────
+        _safe_add(instr["active_requests"], 1, active_labels)
         try:
-            instr["active_requests"].add(1, {"method": method, "route": route})
-        except Exception:
-            pass
+            # Extract W3C TraceContext from incoming headers so this span becomes a
+            # child of any upstream trace (e.g. a caller service that passed traceparent).
+            # Falls back to a new root span when no traceparent header is present.
+            parent_ctx = propagate.extract(request.headers)
 
-        # Extract W3C TraceContext from incoming headers so this span becomes a
-        # child of any upstream trace (e.g. a caller service that passed traceparent).
-        # Falls back to a new root span when no traceparent header is present.
-        parent_ctx = propagate.extract(request.headers)
+            with tracer.start_as_current_span(
+                method,
+                kind=SpanKind.SERVER,
+                context=parent_ctx,
+            ) as span:
+                # Standard HTTP semantic-convention attributes
+                span.set_attribute(SpanAttributes.HTTP_METHOD,     method)
+                span.set_attribute(SpanAttributes.HTTP_TARGET,     request.url.path)
+                span.set_attribute(SpanAttributes.HTTP_SCHEME,     request.url.scheme)
+                span.set_attribute(SpanAttributes.NET_HOST_NAME,   request.url.hostname or "")
+                span.set_attribute(SpanAttributes.HTTP_USER_AGENT, request.headers.get("user-agent", ""))
+                span.set_attribute(
+                    SpanAttributes.HTTP_CLIENT_IP,
+                    request.client.host if request.client else "unknown",
+                )
 
-        with tracer.start_as_current_span(
-            f"{method} {route}",
-            kind=SpanKind.SERVER,
-            context=parent_ctx,
-        ) as span:
-            # Standard HTTP semantic-convention attributes
-            span.set_attribute(SpanAttributes.HTTP_METHOD,     method)
-            span.set_attribute(SpanAttributes.HTTP_TARGET,     request.url.path)
-            span.set_attribute(SpanAttributes.HTTP_ROUTE,      route)
-            span.set_attribute(SpanAttributes.HTTP_SCHEME,     request.url.scheme)
-            span.set_attribute(SpanAttributes.NET_HOST_NAME,   request.url.hostname or "")
-            span.set_attribute(SpanAttributes.HTTP_USER_AGENT, request.headers.get("user-agent", ""))
-            span.set_attribute(
-                SpanAttributes.HTTP_CLIENT_IP,
-                request.client.host if request.client else "unknown",
-            )
+                # ── Call the route handler ────────────────────────────
+                try:
+                    response: Response = await call_next(request)
+                except Exception as exc:
+                    route = _route_template(request)
+                    span.update_name(f"{method} {route}")
+                    span.set_attribute(SpanAttributes.HTTP_ROUTE, route)
+                    span.record_exception(exc)
+                    span.set_status(StatusCode.ERROR, str(exc))
+                    _record(instr, method, route, 500, (time.perf_counter() - t_start) * 1000, 0)
+                    raise
 
-            # ── Call the route handler ────────────────────────────────
-            try:
-                response: Response = await call_next(request)
-            except Exception as exc:
-                span.record_exception(exc)
-                span.set_status(StatusCode.ERROR, str(exc))
-                _record(instr, method, route, 500, (time.perf_counter() - t_start) * 1000, 0)
-                instr["active_requests"].add(-1, {"method": method, "route": route})
-                raise
+                # ── Annotate span ─────────────────────────────────────
+                route = _route_template(request)
+                span.update_name(f"{method} {route}")
+                span.set_attribute(SpanAttributes.HTTP_ROUTE, route)
+                status = response.status_code
+                span.set_attribute(SpanAttributes.HTTP_STATUS_CODE, status)
 
-            # ── Annotate span ─────────────────────────────────────────
-            status = response.status_code
-            span.set_attribute(SpanAttributes.HTTP_STATUS_CODE, status)
-
-            # Guarantee x-session-id is always present on the response so the span
-            # is never empty and callers can correlate by this header.
-            response.headers.setdefault("x-session-id", req_session_id)
-            session_id = response.headers.get("x-session-id", "")
-            if session_id:
+                # Always present on the response so callers can correlate by this header.
+                response.headers["x-session-id"] = req_session_id
+                session_id = req_session_id
                 span.set_attribute("app.session_id", session_id)
 
-            if status >= 400:
-                span.set_status(StatusCode.ERROR, f"HTTP {status}")
-            else:
-                span.set_status(StatusCode.OK)
+                if status >= 400:
+                    span.set_status(StatusCode.ERROR, f"HTTP {status}")
+                else:
+                    span.set_status(StatusCode.OK)
 
-            # ── Record metrics ────────────────────────────────────────
-            duration_ms    = (time.perf_counter() - t_start) * 1000
-            content_length = int(response.headers.get("content-length", 0))
-            _record(instr, method, route, status, duration_ms, content_length)
+                # ── Record metrics ────────────────────────────────────
+                duration_ms = (time.perf_counter() - t_start) * 1000
+                try:
+                    content_length = int(response.headers.get("content-length", 0))
+                except ValueError:
+                    content_length = 0
+                _record(instr, method, route, status, duration_ms, content_length)
 
-            # ── Structured log ────────────────────────────────────────
-            ctx       = span.get_span_context()
-            trace_hex = format(ctx.trace_id, "032x") if ctx else ""
-            level     = logging.WARNING if status >= 400 else logging.INFO
-            logger.log(
-                level,
-                "%s %s → %d  %.1fms  trace=%s",
-                method, request.url.path, status, duration_ms, trace_hex,
-                extra={
-                    "http.method":      method,
-                    "http.route":       route,
-                    "http.status_code": status,
-                    "http.duration_ms": round(duration_ms, 2),
-                    "trace_id":         trace_hex,
-                    "session_id":       session_id,
-                },
-            )
+                # ── Structured log ────────────────────────────────────
+                ctx       = span.get_span_context()
+                trace_hex = format(ctx.trace_id, "032x") if ctx else ""
+                level     = logging.WARNING if status >= 400 else logging.INFO
+                logger.log(
+                    level,
+                    "%s %s → %d  %.1fms  trace=%s",
+                    method, request.url.path, status, duration_ms, trace_hex,
+                    extra={
+                        "http.method":      method,
+                        "http.route":       route,
+                        "http.status_code": status,
+                        "http.duration_ms": round(duration_ms, 2),
+                        "trace_id":         trace_hex,
+                        "session_id":       session_id,
+                    },
+                )
 
-            instr["active_requests"].add(-1, {"method": method, "route": route})
-            return response
+                return response
+        finally:
+            # Runs on every exit path so the in-flight gauge can never leak.
+            _safe_add(instr["active_requests"], -1, active_labels)
+
+
+def _safe_add(instrument, value: int, labels: dict[str, str]) -> None:
+    try:
+        instrument.add(value, labels)
+    except Exception:
+        logger.debug("Metric recording failed", exc_info=True)
+
+
+class _NoopInstrument:
+    def add(self, *args, **kwargs) -> None: ...
+    def record(self, *args, **kwargs) -> None: ...
+
+
+_NOOP_INSTRUMENTS = {
+    k: _NoopInstrument()
+    for k in ("request_count", "request_duration", "active_requests", "error_count", "response_size")
+}
 
 
 def _record(

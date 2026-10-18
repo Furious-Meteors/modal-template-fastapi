@@ -1,11 +1,11 @@
 # modal-template-fastapi
 
-> A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT authentication with scope-based authorisation, paginated CRUD API, telemetry sidecar pattern, OpenTelemetry observability with Grafana Cloud, 145-test pytest suite, and automated CI/CD.
+> A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT authentication with scope-based authorisation, paginated CRUD API, telemetry sidecar pattern, OpenTelemetry observability with Grafana Cloud, 205-test pytest suite, and automated CI/CD.
 
 [![Python](https://img.shields.io/badge/Python-3.11-4f46e5?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-latest-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Modal](https://img.shields.io/badge/Modal-Serverless-7c3aed?style=flat-square)](https://modal.com)
-[![Tests](https://img.shields.io/badge/Tests-145%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-205%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-enabled-f5a800?style=flat-square&logo=opentelemetry&logoColor=white)](src/infrastructure/)
 [![Grafana](https://img.shields.io/badge/Grafana-Cloud-f46800?style=flat-square&logo=grafana&logoColor=white)](docs/OBSERVABILITY.md)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-4f46e5?style=flat-square&logo=materialformkdocs&logoColor=white)](https://your-org.github.io/modal-template-fastapi/)
@@ -32,7 +32,7 @@ The template is built on **Hexagonal Architecture (Ports & Adapters)** so every 
 - ☁️ **Modal serverless** — `feat` / `dev` / `prod` environments via `EnvConfig`, memory snapshots for fast cold starts
 - 🌐 **CORS per-environment** — `cors_origins` field per `EnvConfig`, propagated through env vars
 - 🔌 **Platform-decoupled** — `src/` has zero Modal imports; runs on any ASGI host unchanged
-- ✅ **145-test pytest suite** — isolated per-test repositories, no stubs, runs in < 0.3 seconds
+- ✅ **205-test pytest suite** — isolated per-test repositories, no stubs, runs in < 0.3 seconds
 - 🚀 **GitHub Actions CI/CD** — branch-based environment routing, tests gate every deploy
 
 ---
@@ -60,6 +60,7 @@ modal-template-fastapi/
 │   │       └── tracing_proxy.py      # TracingProxy — generic outbound port sidecar
 │   ├── api/                           # HTTP layer — routes, schemas, auth
 │   │   ├── auth.py                   # JWT verification + get_current_user + require_scope
+│   │   ├── errors.py                 # AppError, unified error handlers, get_session_id
 │   │   ├── models.py                 # Pydantic v2 request/response schemas
 │   │   └── routes.py                 # API endpoints — delegates to ItemService
 │   ├── infrastructure/                # Cross-cutting setup — runs once at startup
@@ -67,7 +68,7 @@ modal-template-fastapi/
 │   │   └── metrics.py                # Domain metric instruments stub (replace per service)
 │   └── utils/
 │       └── config.py                 # App constants read from env vars
-├── tests/                             # pytest suite (145 tests)
+├── tests/                             # pytest suite (205 tests)
 │   ├── conftest.py                   # Fixtures: fresh repo per test, JWT helpers, scope tokens
 │   ├── test_auth.py                  # JWT authentication tests
 │   ├── test_auth_scopes.py           # Scope-based authorisation tests
@@ -163,16 +164,20 @@ git push origin feat/my-feature
 
 ---
 
+> ⚠️ **In-memory persistence is for development and tests only.** The default `InMemoryItemRepository` keeps data per container, so under Modal autoscaling requests can see different data and everything is lost on scale-down. Swap in a real adapter (see `src/deps.py`) before deploying. A warning is logged at startup when `PERSISTENCE_BACKEND=memory` and `MODAL_ENV=prod`.
+
 ## API Reference
 
 | Method | Endpoint | Auth | Scope | Description |
 |---|---|---|---|---|
 | `GET` | `/api/v1/health` | None | — | Service health check |
-| `GET` | `/api/v1/items` | JWT | — | List items (paginated) |
-| `GET` | `/api/v1/items/{id}` | JWT | — | Get a single item |
+| `GET` | `/api/v1/items` | JWT | `items:read` | List items (paginated) |
+| `GET` | `/api/v1/items/{id}` | JWT | `items:read` | Get a single item |
 | `POST` | `/api/v1/items` | JWT | `items:write` | Create an item |
 | `PUT` | `/api/v1/items/{id}` | JWT | `items:write` | Update an item |
 | `DELETE` | `/api/v1/items/{id}` | JWT | `items:write` | Delete an item |
+
+**Unique names:** item names are unique across the service, compared ignoring case and surrounding whitespace. `POST` and `PUT` return `409 ITEM_NAME_EXISTS` for a duplicate; an item may keep its own name on update. Database adapters should also enforce this with a unique index.
 
 **Paginated list response:**
 ```json
@@ -185,7 +190,7 @@ git push origin feat/my-feature
 }
 ```
 
-**JWT scopes:** include `"scopes": ["items:read", "items:write"]` in your JWT payload. Read endpoints accept any valid token; write endpoints require `items:write`.
+**JWT scopes:** include `"scopes": ["items:read", "items:write"]` in your JWT payload. Read endpoints (`GET`) require `items:read`; write endpoints require `items:write`. Tokens must carry `exp` and `sub`; set `JWT_AUDIENCE` / `JWT_ISSUER` to also enforce `aud` / `iss`. `JWT_SECRET` must be at least 32 characters; it, `PERSISTENCE_BACKEND` and its required env vars are validated at startup, so a bad config stops the container instead of failing the first request.
 
 Generate a token for testing:
 ```bash
@@ -201,11 +206,11 @@ python scripts/jwt_token_generator.py --secret <JWT_SECRET>
 The template uses **JWT Bearer tokens** with scope-based authorisation.
 
 ```python
-# Any valid token — read access
-current_user: dict = Depends(get_current_user)
+# Requires "items:read" scope in JWT payload
+current_user: TokenPayload = Depends(require_scope("items:read"))
 
 # Requires "items:write" scope in JWT payload
-current_user: dict = Depends(require_scope("items:write"))
+current_user: TokenPayload = Depends(require_scope("items:write"))
 ```
 
 **JWT payload shape:**
@@ -217,7 +222,7 @@ current_user: dict = Depends(require_scope("items:write"))
 }
 ```
 
-**Error codes:** `MISSING_TOKEN` (401), `TOKEN_EXPIRED` (401), `INVALID_TOKEN` (401), `INSUFFICIENT_SCOPE` (403).
+**Errors:** every error response is the same flat body — `{"detail", "session_id", "error_code"}`, plus an `errors` list of `{field, message, type}` for validation failures. `session_id` always matches the `x-session-id` response header. Codes: `MISSING_TOKEN` / `TOKEN_EXPIRED` / `INVALID_TOKEN` (401), `INSUFFICIENT_SCOPE` (403), `ITEM_NOT_FOUND` / `NOT_FOUND` (404), `METHOD_NOT_ALLOWED` (405), `ITEM_NAME_EXISTS` (409), `VALIDATION_ERROR` (422), `INTERNAL_ERROR` (500).
 
 **Modal secret setup:**
 ```bash
@@ -250,7 +255,7 @@ Telemetry is a **sidecar** — domain and adapters have zero OTel knowledge. Two
 | Log correlation | Every log line carries `otelTraceID` + `otelSpanID` |
 | W3C trace propagation | Incoming `traceparent` headers respected — spans become children of upstream traces |
 
-**Environment strategy:** `feat` and `prod` push telemetry; `dev` is silent (zero cost). Controlled by the `grafana-otlp` Modal Secret — no code changes needed.
+**Environment strategy:** `feat` and `prod` push telemetry; `dev` is silent (zero cost). Controlled by `EnvConfig.telemetry_enabled` — `dev` sets it to `False`, which skips mounting the `grafana-otlp` Modal Secret and forces no-op telemetry providers (`TELEMETRY_ENABLED=false`).
 
 **One-time Grafana Cloud setup:**
 ```bash

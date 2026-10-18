@@ -10,15 +10,17 @@ from fastapi.testclient import TestClient
 
 from src.main import app
 from src.api.auth import get_current_user
+from src.api.models import TokenPayload
 from src.deps import get_item_service
 from src.adapters.persistence.memory import InMemoryItemRepository
 from src.core.services.item_service import ItemService
 
 TEST_SECRET = "test-secret-key-for-pytest-at-least-32-bytes"
-TEST_USER = {
-    "sub": "test@example.com",
-    "scopes": ["items:read", "items:write"],
-}
+TEST_USER = TokenPayload(
+    sub="test@example.com",
+    exp=9_999_999_999,
+    scopes=["items:read", "items:write"],
+)
 
 
 def make_token(
@@ -27,11 +29,20 @@ def make_token(
     secret: str = TEST_SECRET,
     algorithm: str = "HS256",
     scopes: list[str] | None = None,
+    include_exp: bool = True,
+    include_sub: bool = True,
+    extra_claims: dict | None = None,
 ) -> str:
     now = int(time.time())
-    payload: dict = {"sub": sub, "iat": now, "exp": now + exp_offset}
+    payload: dict = {"iat": now}
+    if include_sub:
+        payload["sub"] = sub
+    if include_exp:
+        payload["exp"] = now + exp_offset
     if scopes is not None:
         payload["scopes"] = scopes
+    if extra_claims:
+        payload.update(extra_claims)
     return jwt.encode(payload, secret, algorithm=algorithm)
 
 
@@ -68,6 +79,11 @@ def auth_client(fresh_item_service):
 def valid_token() -> str:
     """Valid token with no scopes — passes auth, fails scope checks."""
     return make_token()
+
+
+@pytest.fixture
+def read_headers(read_token: str) -> dict:
+    return {"Authorization": f"Bearer {read_token}"}
 
 
 @pytest.fixture

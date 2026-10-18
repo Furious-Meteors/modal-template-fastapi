@@ -20,11 +20,14 @@ Caching layer (optional):
 """
 from __future__ import annotations
 
+import logging
 import os
 from functools import lru_cache
 
 from src.core.services.item_service import ItemService
 from src.adapters.telemetry.tracing_proxy import TracingProxy
+
+logger = logging.getLogger(__name__)
 
 # ── Required env vars per backend ──────────────────────────────────────────
 # Checked at startup so misconfiguration fails fast with a clear error,
@@ -80,7 +83,24 @@ def _get_repository():
 
     # Wrap with telemetry sidecar — spans become children of the HTTP middleware span.
     # Remove this line to disable sub-request tracing with zero other changes.
-    return TracingProxy(raw, prefix=f"repository.item")
+    return TracingProxy(raw, prefix="repository.item")
+
+
+def init_dependencies() -> None:
+    """
+    Eagerly build and validate everything the request path needs.
+
+    Called from the app lifespan so a bad PERSISTENCE_BACKEND or missing backend
+    env var stops the container at startup instead of 500-ing the first request.
+    """
+    backend = os.environ.get("PERSISTENCE_BACKEND", "memory")
+    _get_repository()
+    if backend == "memory" and os.environ.get("MODAL_ENV") == "prod":
+        logger.warning(
+            "PERSISTENCE_BACKEND=memory in prod: each container keeps its own "
+            "store, so data differs between containers and is lost on scale-down. "
+            "Use a real persistence adapter."
+        )
 
 
 def get_item_service() -> ItemService:
