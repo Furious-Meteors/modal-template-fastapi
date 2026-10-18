@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from src.api.auth import require_scope
 from src.api.models import (
+    ErrorDetail,
     HealthCheckResponse,
     HealthStatus,
     ItemRequest,
@@ -11,11 +12,23 @@ from src.api.models import (
     PaginatedItemsResponse,
     TokenPayload,
 )
+from src.core.domain.errors import DuplicateItemNameError
 from src.core.services.item_service import ItemService
 from src.deps import get_item_service
 from src.utils.config import APP_ENV, APP_NAME, APP_VERSION
 
 router = APIRouter()
+
+
+def _duplicate_name_error(exc: DuplicateItemNameError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=ErrorDetail(
+            detail=str(exc),
+            session_id=str(uuid.uuid4()),
+            error_code="ITEM_NAME_EXISTS",
+        ).model_dump(),
+    )
 
 MAX_PAGE_SIZE = 500
 
@@ -72,6 +85,7 @@ async def get_item(
     "/items",
     response_model=ItemResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={409: {"model": ErrorDetail, "description": "Item name already exists"}},
     tags=["Items"],
 )
 async def create_item(
@@ -79,11 +93,14 @@ async def create_item(
     service: ItemService = Depends(get_item_service),
     current_user: TokenPayload = Depends(require_scope("items:write")),
 ):
-    item = await service.create(
-        name=request.name,
-        description=request.description,
-        project_id=request.project_id,
-    )
+    try:
+        item = await service.create(
+            name=request.name,
+            description=request.description,
+            project_id=request.project_id,
+        )
+    except DuplicateItemNameError as exc:
+        raise _duplicate_name_error(exc)
     return ItemResponse(
         session_id=str(uuid.uuid4()),
         status="created",
@@ -92,19 +109,27 @@ async def create_item(
     )
 
 
-@router.put("/items/{item_id}", response_model=ItemResponse, tags=["Items"])
+@router.put(
+    "/items/{item_id}",
+    response_model=ItemResponse,
+    tags=["Items"],
+    responses={409: {"model": ErrorDetail, "description": "Item name already exists"}},
+)
 async def update_item(
     item_id: str,
     request: ItemRequest,
     service: ItemService = Depends(get_item_service),
     current_user: TokenPayload = Depends(require_scope("items:write")),
 ):
-    item = await service.update(
-        item_id=item_id,
-        name=request.name,
-        description=request.description,
-        project_id=request.project_id,
-    )
+    try:
+        item = await service.update(
+            item_id=item_id,
+            name=request.name,
+            description=request.description,
+            project_id=request.project_id,
+        )
+    except DuplicateItemNameError as exc:
+        raise _duplicate_name_error(exc)
     if item is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

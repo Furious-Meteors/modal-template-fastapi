@@ -1,11 +1,11 @@
 # modal-template-fastapi
 
-> A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT authentication with scope-based authorisation, paginated CRUD API, telemetry sidecar pattern, OpenTelemetry observability with Grafana Cloud, 179-test pytest suite, and automated CI/CD.
+> A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT authentication with scope-based authorisation, paginated CRUD API, telemetry sidecar pattern, OpenTelemetry observability with Grafana Cloud, 187-test pytest suite, and automated CI/CD.
 
 [![Python](https://img.shields.io/badge/Python-3.11-4f46e5?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-latest-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Modal](https://img.shields.io/badge/Modal-Serverless-7c3aed?style=flat-square)](https://modal.com)
-[![Tests](https://img.shields.io/badge/Tests-179%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-187%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-enabled-f5a800?style=flat-square&logo=opentelemetry&logoColor=white)](src/infrastructure/)
 [![Grafana](https://img.shields.io/badge/Grafana-Cloud-f46800?style=flat-square&logo=grafana&logoColor=white)](docs/OBSERVABILITY.md)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-4f46e5?style=flat-square&logo=materialformkdocs&logoColor=white)](https://your-org.github.io/modal-template-fastapi/)
@@ -32,7 +32,7 @@ The template is built on **Hexagonal Architecture (Ports & Adapters)** so every 
 - ☁️ **Modal serverless** — `feat` / `dev` / `prod` environments via `EnvConfig`, memory snapshots for fast cold starts
 - 🌐 **CORS per-environment** — `cors_origins` field per `EnvConfig`, propagated through env vars
 - 🔌 **Platform-decoupled** — `src/` has zero Modal imports; runs on any ASGI host unchanged
-- ✅ **179-test pytest suite** — isolated per-test repositories, no stubs, runs in < 0.3 seconds
+- ✅ **187-test pytest suite** — isolated per-test repositories, no stubs, runs in < 0.3 seconds
 - 🚀 **GitHub Actions CI/CD** — branch-based environment routing, tests gate every deploy
 
 ---
@@ -176,6 +176,8 @@ git push origin feat/my-feature
 | `PUT` | `/api/v1/items/{id}` | JWT | `items:write` | Update an item |
 | `DELETE` | `/api/v1/items/{id}` | JWT | `items:write` | Delete an item |
 
+**Unique names:** item names are unique across the service, compared ignoring case and surrounding whitespace. `POST` and `PUT` return `409 ITEM_NAME_EXISTS` for a duplicate; an item may keep its own name on update. Database adapters should also enforce this with a unique index.
+
 **Paginated list response:**
 ```json
 {
@@ -219,7 +221,7 @@ current_user: TokenPayload = Depends(require_scope("items:write"))
 }
 ```
 
-**Error codes:** `MISSING_TOKEN` (401), `TOKEN_EXPIRED` (401), `INVALID_TOKEN` (401), `INSUFFICIENT_SCOPE` (403).
+**Error codes:** `MISSING_TOKEN` (401), `TOKEN_EXPIRED` (401), `INVALID_TOKEN` (401), `INSUFFICIENT_SCOPE` (403), `ITEM_NAME_EXISTS` (409).
 
 **Modal secret setup:**
 ```bash

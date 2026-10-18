@@ -134,8 +134,8 @@ def test_create_item_missing_name_returns_422(client: TestClient):
 
 
 def test_create_item_ids_are_unique(client: TestClient):
-    id1 = _create_item(client)["data"]["id"]
-    id2 = _create_item(client)["data"]["id"]
+    id1 = _create_item(client, name="first")["data"]["id"]
+    id2 = _create_item(client, name="second")["data"]["id"]
     assert id1 != id2
 
 
@@ -285,3 +285,64 @@ def test_list_items_accepts_max_limit(client: TestClient):
     response = client.get("/api/v1/items", params={"limit": 500})
     assert response.status_code == 200
     assert response.json()["limit"] == 500
+
+
+# ---------------------------------------------------------------------------
+# Unique item names
+# ---------------------------------------------------------------------------
+
+
+def test_create_duplicate_name_returns_409(client: TestClient):
+    _create_item(client, name="dup")
+    response = client.post("/api/v1/items", json={"name": "dup"})
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["error_code"] == "ITEM_NAME_EXISTS"
+    assert "dup" in detail["detail"]
+
+
+def test_create_duplicate_name_is_case_and_whitespace_insensitive(client: TestClient):
+    _create_item(client, name="Widget")
+    assert client.post("/api/v1/items", json={"name": "widget"}).status_code == 409
+    assert client.post("/api/v1/items", json={"name": "  WIDGET "}).status_code == 409
+
+
+def test_duplicate_create_does_not_add_item(client: TestClient):
+    _create_item(client, name="only")
+    client.post("/api/v1/items", json={"name": "only"})
+    assert _list_items(client)["total"] == 1
+
+
+def test_name_uniqueness_is_global_across_projects(client: TestClient):
+    """Uniqueness is global, not per project_id."""
+    _create_item(client, name="shared", project_id="p1")
+    response = client.post("/api/v1/items", json={"name": "shared", "project_id": "p2"})
+    assert response.status_code == 409
+
+
+def test_name_can_be_reused_after_delete(client: TestClient):
+    item_id = _create_item(client, name="temp")["data"]["id"]
+    assert client.delete(f"/api/v1/items/{item_id}").status_code == 204
+    assert client.post("/api/v1/items", json={"name": "temp"}).status_code == 201
+
+
+def test_update_to_existing_name_returns_409(client: TestClient):
+    _create_item(client, name="taken")
+    other_id = _create_item(client, name="other")["data"]["id"]
+    response = client.put(f"/api/v1/items/{other_id}", json={"name": "taken"})
+    assert response.status_code == 409
+    assert response.json()["detail"]["error_code"] == "ITEM_NAME_EXISTS"
+
+
+def test_update_keeping_own_name_is_allowed(client: TestClient):
+    item_id = _create_item(client, name="mine")["data"]["id"]
+    response = client.put(
+        f"/api/v1/items/{item_id}", json={"name": "mine", "description": "changed"}
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["description"] == "changed"
+
+
+def test_update_missing_item_still_404_even_if_name_taken(client: TestClient):
+    _create_item(client, name="taken")
+    assert client.put("/api/v1/items/nope", json={"name": "taken"}).status_code == 404

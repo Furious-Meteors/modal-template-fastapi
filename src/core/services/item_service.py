@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 from typing import List, Optional, Tuple
 
+from src.core.domain.errors import DuplicateItemNameError
 from src.core.domain.item import Item
 from src.core.ports.item_repository import ItemRepository
 
@@ -27,6 +28,8 @@ class ItemService:
         description: Optional[str] = None,
         project_id: Optional[str] = None,
     ) -> Item:
+        if await self._repo.get_by_name(name) is not None:
+            raise DuplicateItemNameError(name)
         item = Item(
             id=str(uuid.uuid4()),
             name=name,
@@ -51,6 +54,10 @@ class ItemService:
         existing = await self._repo.get(item_id)
         if existing is None:
             return None
+        # Keeping your own name is fine; taking another item's name is not.
+        clash = await self._repo.get_by_name(name)
+        if clash is not None and clash.id != item_id:
+            raise DuplicateItemNameError(name)
         updated = Item(id=item_id, name=name, description=description, project_id=project_id)
         return await self._repo.update(updated)
 

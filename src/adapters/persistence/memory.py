@@ -27,6 +27,13 @@ class InMemoryItemRepository:
     async def get(self, item_id: str) -> Optional[Item]:
         return self._store.get(item_id)
 
+    async def get_by_name(self, name: str) -> Optional[Item]:
+        wanted = name.strip().casefold()
+        return next(
+            (i for i in self._store.values() if i.name.strip().casefold() == wanted),
+            None,
+        )
+
     async def list(self, limit: int = 100, offset: int = 0) -> Tuple[List[Item], int]:
         all_items = list(self._store.values())
         total = len(all_items)
