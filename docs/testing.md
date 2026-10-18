@@ -197,8 +197,6 @@ Pure Pydantic unit tests — no HTTP, no TestClient, instantaneous:
 | `HealthCheckResponse` | 4 | `services_summary` required; `HealthStatus` enum |
 | `ErrorDetail` | 3 | `detail` required; `session_id`, `error_code` and `errors` optional |
 | `TokenPayload` | 4 | `sub` and `exp` required; `iat` optional |
-| `FileUploadRequest` | 4 | `project_id` required with `min_length=1`; `filename` optional |
-| `FileUploadResponse` | 2 | All optional fields (`file_id`, `file_size`, `file_path`) default to `None` |
 
 ---
 
