@@ -11,6 +11,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added (streaming)
+- Server-Sent Events (`GET /events/stream`), WebSocket (`POST /ws/ticket`, `WS /ws`) and signed webhook ingestion (`POST /webhooks/{provider}`, generic HMAC-SHA256 with timestamp tolerance and idempotency) — see `docs/api/streaming.md`
+- `EventBus` and `WebhookEventStore` ports with in-memory adapters; `ItemService` publishes `item.created` / `item.updated` / `item.deleted`
+- `events:read` scope; WebSocket tickets are short-lived single-purpose JWTs with their own audience
+- `EnvConfig.max_streams` (validated `< max_concurrent_requests`) and `stream_timeout_margin_seconds`; streams are capped per container and end themselves before the Modal timeout
+- Stream and webhook metrics (`stream.connections.active/closed`, `stream.messages.sent`, `webhook.received`) and one span per WebSocket connection
+
+### Changed (streaming)
+- `TelemetryMiddleware` is now a pure ASGI middleware (was `BaseHTTPMiddleware`) so streaming responses are unbuffered and WebSockets are supported; the in-flight gauge is labelled by method only
+- Metric `route` labels resolve through `scope["route"]`, fixing raw-URL labels on included routers (unbounded cardinality) and collapsing unmatched paths to `unmatched`
+
 ### Changed
 - **Breaking:** all error responses now share one flat body — `{"detail": str, "session_id": str, "error_code": str}` plus an `errors` list for validation failures. Auth errors previously nested this under `detail`, and 404s were a bare string
 - **Breaking:** `GET /items` and `GET /items/{id}` now require the `items:read` scope (previously any valid token)

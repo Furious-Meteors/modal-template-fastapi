@@ -1,4 +1,7 @@
 # modal-template-fastapi
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Furious-Meteors/modal-template-fastapi/production/docs/assets/images/banner.png" alt="openframe-core" width="100%" />
+</p>
 
 > A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT authentication with scope-based authorisation, paginated CRUD API, telemetry sidecar pattern, OpenTelemetry observability with Grafana Cloud, 205-test pytest suite, and automated CI/CD.
 
@@ -176,6 +179,12 @@ git push origin feat/my-feature
 | `POST` | `/api/v1/items` | JWT | `items:write` | Create an item |
 | `PUT` | `/api/v1/items/{id}` | JWT | `items:write` | Update an item |
 | `DELETE` | `/api/v1/items/{id}` | JWT | `items:write` | Delete an item |
+| `GET` | `/api/v1/events/stream` | JWT | `events:read` | Server-Sent Events stream (`?topic=items\|webhooks`) |
+| `POST` | `/api/v1/ws/ticket` | JWT | `events:read` | Exchange a JWT for a single-use WebSocket ticket |
+| `WS` | `/api/v1/ws?ticket=…` | Ticket | `events:read` | WebSocket event stream |
+| `POST` | `/api/v1/webhooks/{provider}` | HMAC | — | Receive a signed webhook (`WEBHOOK_SECRET_<PROVIDER>`) |
+
+**Streaming & webhooks:** all three share an `EventBus` port. The shipped bus is in-memory (single container) — add a shared adapter before scaling out. Open streams are capped below `max_concurrent_requests` so they cannot starve normal requests. Details: [Streaming & Webhooks](https://your-org.github.io/modal-template-fastapi/api/streaming/).
 
 **Unique names:** item names are unique across the service, compared ignoring case and surrounding whitespace. `POST` and `PUT` return `409 ITEM_NAME_EXISTS` for a duplicate; an item may keep its own name on update. Database adapters should also enforce this with a unique index.
 

@@ -102,6 +102,7 @@ nav:
     - api/index.md
     - Endpoints: api/endpoints.md
     - Authentication: api/auth.md
+    - Streaming & Webhooks: api/streaming.md
   - Testing: testing.md
   - CI/CD: cicd.md
   - Deployment: deployment.md
