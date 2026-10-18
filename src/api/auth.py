@@ -1,4 +1,6 @@
 import os
+import time
+import uuid
 
 import jwt
 from fastapi import Depends
@@ -7,6 +9,7 @@ from pydantic import ValidationError
 
 from src.api.errors import AppError
 from src.api.models import TokenPayload
+from src.utils.config import WS_TICKET_TTL_SECONDS
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -117,3 +120,63 @@ def require_scope(*scopes: str):
             )
         return current_user
     return _check
+
+
+# ── WebSocket tickets ──────────────────────────────────────────────────────
+# Browsers cannot set an Authorization header on `new WebSocket(...)`, so a
+# client first trades its Bearer JWT for a short-lived, single-purpose ticket
+# and passes that in the query string. The ticket is a signed JWT with its own
+# audience, so it is useless as an API token (and API tokens are useless as
+# tickets). It is stateless — any container can verify it — and single-use is
+# enforced per container on a best-effort basis.
+
+WS_TICKET_AUDIENCE = "ws-ticket"
+_used_ticket_ids: dict[str, float] = {}
+
+
+def create_ws_ticket(user: TokenPayload) -> tuple[str, int]:
+    """Mint a ticket for `user`. Returns (ticket, ttl_seconds)."""
+    now = int(time.time())
+    claims: dict = {
+        "sub": user.sub,
+        "aud": WS_TICKET_AUDIENCE,
+        "scopes": ["events:read"],  # least privilege: a ticket only opens a stream
+        "iat": now,
+        "exp": now + WS_TICKET_TTL_SECONDS,
+        "jti": uuid.uuid4().hex,
+    }
+    issuer = os.environ.get("JWT_ISSUER")
+    if issuer:
+        claims["iss"] = issuer
+    ticket = jwt.encode(claims, _get_secret_key(), algorithm=_get_algorithm())
+    return ticket, WS_TICKET_TTL_SECONDS
+
+
+def verify_ws_ticket(ticket: str) -> TokenPayload:
+    """Validate and consume a ticket. Raises AppError(401) on any failure."""
+    kwargs: dict = {"audience": WS_TICKET_AUDIENCE}
+    issuer = os.environ.get("JWT_ISSUER")
+    if issuer:
+        kwargs["issuer"] = issuer
+    try:
+        claims = jwt.decode(
+            ticket,
+            _get_secret_key(),
+            algorithms=[_get_algorithm()],
+            options={"require": ["exp", "sub", "jti"]},
+            **kwargs,
+        )
+        payload = TokenPayload.model_validate(claims)
+    except jwt.ExpiredSignatureError:
+        raise _unauthorized("TICKET_EXPIRED", "Ticket has expired")
+    except (jwt.InvalidTokenError, ValidationError):
+        raise _unauthorized("INVALID_TICKET", "Invalid ticket")
+
+    now = time.time()
+    for jti in [j for j, exp in _used_ticket_ids.items() if exp <= now]:
+        del _used_ticket_ids[jti]
+    jti = claims["jti"]
+    if jti in _used_ticket_ids:
+        raise _unauthorized("INVALID_TICKET", "Ticket has already been used")
+    _used_ticket_ids[jti] = float(payload.exp)
+    return payload

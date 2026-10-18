@@ -83,6 +83,18 @@ class PaginatedItemsResponse(BaseModel):
     offset: int = Field(..., description="Number of items skipped")
     has_more: bool = Field(..., description="True when more items exist beyond this page")
 
+class WsTicketResponse(BaseModel):
+    """Short-lived, single-use credential for opening a WebSocket."""
+    ticket: str = Field(..., description="Pass as ?ticket= when connecting to /ws")
+    expires_in: int = Field(..., description="Seconds until the ticket expires")
+
+
+class WebhookResponse(BaseResponse):
+    """Acknowledgement for an inbound webhook."""
+    status: str = Field(..., description="'accepted' or 'duplicate'")
+    message: str = Field(..., description="Human-readable message about the delivery")
+
+
 class HealthCheckResponse(BaseResponse):
     """Response model for health check."""
     status: HealthStatus

@@ -80,6 +80,14 @@ class EnvConfig:
     min_containers: int = 0
     max_concurrent_requests: int = 5
 
+    # STREAMING — each open SSE/WebSocket connection holds one concurrent-request
+    # slot for its whole life. Cap them below max_concurrent_requests so streams
+    # can never starve normal requests (validated in __post_init__).
+    max_streams: int = 3
+    # Streams end themselves this many seconds before the hard timeout so
+    # clients reconnect cleanly instead of being cut off.
+    stream_timeout_margin_seconds: int = 30
+
     # MODAL RESOURCES
     secrets: list = field(default_factory=list)
     volumes: Dict[str, modal.Volume] = field(default_factory=lambda: FASTAPI_VOLUME)
@@ -91,6 +99,18 @@ class EnvConfig:
     telemetry_enabled: bool = True       # False = no OTLP export and no grafana-otlp secret mounted
     otel_endpoint: Optional[str] = None  # Grafana Cloud OTLP base URL
     service_name:  Optional[str] = None  # defaults to app_name when None
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.max_streams < self.max_concurrent_requests:
+            raise ValueError(
+                f"max_streams ({self.max_streams}) must be >= 1 and less than "
+                f"max_concurrent_requests ({self.max_concurrent_requests}), "
+                f"otherwise open streams can starve regular requests"
+            )
+        if self.server_hard_timeout_seconds - self.stream_timeout_margin_seconds < 10:
+            raise ValueError(
+                "server_hard_timeout_seconds must exceed stream_timeout_margin_seconds by at least 10"
+            )
 
 
 FEAT = EnvConfig(
@@ -160,6 +180,12 @@ def configure_env_vars(env: EnvConfig) -> None:
     os.environ.setdefault("APP_DESCRIPTION", env.app_description)
     os.environ.setdefault("SERVER_PREFIX", env.server_prefix)
     os.environ.setdefault("CORS_ORIGINS", ",".join(env.cors_origins))
+    # Streaming limits — read by src/utils/config.py
+    os.environ.setdefault("STREAM_MAX_CONNECTIONS", str(env.max_streams))
+    os.environ.setdefault(
+        "STREAM_MAX_DURATION_SECONDS",
+        str(env.server_hard_timeout_seconds - env.stream_timeout_margin_seconds),
+    )
 
 
 def build_fastapi_config(env: EnvConfig) -> dict:

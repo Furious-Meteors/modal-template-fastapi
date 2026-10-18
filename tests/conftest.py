@@ -11,8 +11,11 @@ from fastapi.testclient import TestClient
 from src.main import app
 from src.api.auth import get_current_user
 from src.api.models import TokenPayload
-from src.deps import get_item_service
+from src.deps import get_event_bus, get_item_service, get_webhook_store
+from src.adapters.events.memory import InMemoryEventBus, InMemoryWebhookStore
 from src.adapters.persistence.memory import InMemoryItemRepository
+from src.api import auth as auth_module
+from src.api import streaming
 from src.core.services.item_service import ItemService
 
 TEST_SECRET = "test-secret-key-for-pytest-at-least-32-bytes"
@@ -47,12 +50,39 @@ def make_token(
 
 
 @pytest.fixture(autouse=True)
-def fresh_item_service():
+def event_bus():
+    """A fresh in-memory event bus per test, shared by the item service and streams."""
+    bus = InMemoryEventBus()
+    app.dependency_overrides[get_event_bus] = lambda: bus
+    yield bus
+    app.dependency_overrides.pop(get_event_bus, None)
+
+
+@pytest.fixture(autouse=True)
+def webhook_store():
+    store = InMemoryWebhookStore()
+    app.dependency_overrides[get_webhook_store] = lambda: store
+    yield store
+    app.dependency_overrides.pop(get_webhook_store, None)
+
+
+@pytest.fixture(autouse=True)
+def reset_stream_state():
+    """Fresh connection cap and ticket replay cache for every test."""
+    original = streaming.limiter
+    streaming.limiter = streaming.StreamLimiter(50)
+    auth_module._used_ticket_ids.clear()
+    yield streaming.limiter
+    streaming.limiter = original
+
+
+@pytest.fixture(autouse=True)
+def fresh_item_service(event_bus):
     """
     Each test gets an isolated in-memory repository — no state bleed between tests.
     Overrides the get_item_service FastAPI dependency for the duration of each test.
     """
-    service = ItemService(InMemoryItemRepository())
+    service = ItemService(InMemoryItemRepository(), event_bus)
     app.dependency_overrides[get_item_service] = lambda: service
     yield service
     app.dependency_overrides.pop(get_item_service, None)

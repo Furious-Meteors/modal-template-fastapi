@@ -6,7 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.auth import validate_auth_config
 from src.api.errors import register_exception_handlers
+from src.api.events import router as events_router
 from src.api.routes import router
+from src.api.webhooks import router as webhooks_router
 from src.adapters.http.middleware import TelemetryMiddleware
 from src.deps import init_dependencies
 from src.utils.config import APP_DESCRIPTION, APP_ENV, APP_VERSION, CORS_ORIGINS, SERVER_PREFIX, SERVICE_TITLE
@@ -50,3 +52,5 @@ app.add_middleware(TelemetryMiddleware)
 register_exception_handlers(app)
 
 app.include_router(router, prefix=SERVER_PREFIX)
+app.include_router(events_router, prefix=SERVER_PREFIX)
+app.include_router(webhooks_router, prefix=SERVER_PREFIX)
