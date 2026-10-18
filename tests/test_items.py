@@ -1,4 +1,5 @@
 """Tests for CRUD item endpoints (auth dependency overridden via client fixture)."""
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -258,3 +259,29 @@ def test_delete_only_target_item(client: TestClient):
     id2 = _create_item(client, name="remove")["data"]["id"]
     client.delete(f"/api/v1/items/{id2}")
     assert client.get(f"/api/v1/items/{id1}").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Pagination parameter validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"limit": 0},
+        {"limit": -1},
+        {"offset": -1},
+        {"limit": 501},
+    ],
+)
+def test_list_items_rejects_invalid_pagination(client: TestClient, params: dict):
+    response = client.get("/api/v1/items", params=params)
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "VALIDATION_ERROR"
+
+
+def test_list_items_accepts_max_limit(client: TestClient):
+    response = client.get("/api/v1/items", params={"limit": 500})
+    assert response.status_code == 200
+    assert response.json()["limit"] == 500

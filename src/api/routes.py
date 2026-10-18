@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from src.api.auth import get_current_user, require_scope
 from src.api.models import (
@@ -16,6 +16,8 @@ from src.utils.config import APP_ENV, APP_NAME, APP_VERSION
 
 router = APIRouter()
 
+MAX_PAGE_SIZE = 500
+
 
 @router.get("/health", response_model=HealthCheckResponse, tags=["Health"])
 async def health_check():
@@ -30,8 +32,8 @@ async def health_check():
 
 @router.get("/items", response_model=PaginatedItemsResponse, tags=["Items"])
 async def list_items(
-    limit: int = 100,
-    offset: int = 0,
+    limit: int = Query(100, ge=1, le=MAX_PAGE_SIZE, description="Maximum items to return"),
+    offset: int = Query(0, ge=0, description="Number of items to skip"),
     service: ItemService = Depends(get_item_service),
     current_user: dict = Depends(get_current_user),
 ):
