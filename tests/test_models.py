@@ -5,8 +5,6 @@ from pydantic import ValidationError
 from src.api.models import (
     BaseResponse,
     ErrorDetail,
-    FileUploadRequest,
-    FileUploadResponse,
     HealthCheckResponse,
     HealthStatus,
     ItemRequest,
@@ -214,51 +212,17 @@ def test_token_payload_requires_exp():
         TokenPayload(sub="u")  # type: ignore[call-arg]
 
 
-# ---------------------------------------------------------------------------
-# FileUploadRequest
-# ---------------------------------------------------------------------------
+def test_item_request_strips_name():
+    assert ItemRequest(name="  Foo  ").name == "Foo"
 
 
-def test_file_upload_request_valid():
-    req = FileUploadRequest(project_id="proj-1")
-    assert req.filename is None
-
-
-def test_file_upload_request_with_filename():
-    req = FileUploadRequest(project_id="proj-1", filename="report.pdf")
-    assert req.filename == "report.pdf"
-
-
-def test_file_upload_request_project_id_required():
+@pytest.mark.parametrize("blank", ["   ", "\t\n"])
+def test_item_request_rejects_blank_name(blank):
     with pytest.raises(ValidationError):
-        FileUploadRequest()  # type: ignore[call-arg]
+        ItemRequest(name=blank)
 
 
-def test_file_upload_request_project_id_min_length():
-    with pytest.raises(ValidationError):
-        FileUploadRequest(project_id="")
-
-
-# ---------------------------------------------------------------------------
-# FileUploadResponse
-# ---------------------------------------------------------------------------
-
-
-def test_file_upload_response_minimal():
-    resp = FileUploadResponse(session_id="s1", status="ok", message="uploaded")
-    assert resp.file_id is None
-    assert resp.file_size is None
-    assert resp.file_path is None
-
-
-def test_file_upload_response_full():
-    resp = FileUploadResponse(
-        session_id="s1",
-        status="ok",
-        message="done",
-        file_id="f-abc",
-        file_size=1024,
-        file_path="/tmp/file.pdf",
-    )
-    assert resp.file_id == "f-abc"
-    assert resp.file_size == 1024
+def test_token_payload_truncates_float_timestamps():
+    payload = TokenPayload(sub="u", exp=9_999_999_999.75, iat=1_000_000_000.5)
+    assert payload.exp == 9_999_999_999
+    assert payload.iat == 1_000_000_000

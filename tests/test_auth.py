@@ -201,3 +201,23 @@ def test_token_generator_honours_scopes(monkeypatch, capsys):
     token = capsys.readouterr().out.strip()
     claims = jwt.decode(token, TEST_SECRET, algorithms=["HS256"])
     assert claims["scopes"] == ["items:read", "other:scope"]
+
+
+# ---------------------------------------------------------------------------
+# Algorithm allowlist
+# ---------------------------------------------------------------------------
+
+
+def test_validate_auth_config_rejects_unsupported_algorithm(monkeypatch):
+    from src.api.auth import validate_auth_config
+
+    monkeypatch.setenv("JWT_ALGORITHM", "none")
+    with pytest.raises(RuntimeError, match="JWT_ALGORITHM"):
+        validate_auth_config()
+
+
+def test_validate_auth_config_accepts_hs512(monkeypatch):
+    from src.api.auth import validate_auth_config
+
+    monkeypatch.setenv("JWT_ALGORITHM", "HS512")
+    validate_auth_config()
