@@ -3,6 +3,10 @@ src/adapters/persistence/memory.py
 ====================================
 In-memory persistence adapter — ships with the template.
 
+DEVELOPMENT AND TESTS ONLY. Each process/container holds its own private store,
+so under Modal autoscaling requests can hit containers with different data, and
+everything is lost on scale-down. Not suitable for multi-container deployments.
+
 Satisfies ItemRepository Protocol structurally (no inheritance needed).
 Replace or supplement with a concrete DB adapter in src/deps.py.
 
@@ -22,6 +26,13 @@ class InMemoryItemRepository:
 
     async def get(self, item_id: str) -> Optional[Item]:
         return self._store.get(item_id)
+
+    async def get_by_name(self, name: str) -> Optional[Item]:
+        wanted = name.strip().casefold()
+        return next(
+            (i for i in self._store.values() if i.name.strip().casefold() == wanted),
+            None,
+        )
 
     async def list(self, limit: int = 100, offset: int = 0) -> Tuple[List[Item], int]:
         all_items = list(self._store.values())

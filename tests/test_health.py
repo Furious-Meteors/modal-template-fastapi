@@ -47,3 +47,22 @@ def test_health_does_not_require_auth(auth_client: TestClient):
     """Health endpoint is public — no Authorization header needed."""
     response = auth_client.get("/api/v1/health")
     assert response.status_code == 200
+
+
+def test_health_reports_unhealthy_when_repository_fails(client: TestClient):
+    from src.deps import get_item_service
+    from src.main import app
+
+    class _BrokenService:
+        async def list(self, limit: int = 100, offset: int = 0):
+            raise RuntimeError("db down")
+
+    app.dependency_overrides[get_item_service] = lambda: _BrokenService()
+    try:
+        response = client.get("/api/v1/health")
+    finally:
+        app.dependency_overrides.pop(get_item_service, None)
+    assert response.status_code == 503
+    data = response.json()
+    assert data["status"] == "unhealthy"
+    assert data["services_summary"] == {"total": 1, "healthy": 0, "unhealthy": 1}

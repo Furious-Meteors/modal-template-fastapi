@@ -56,17 +56,10 @@ def test_x_session_id_looks_like_uuid(client: TestClient):
     assert re.match(uuid_pattern, session_id), f"Not a UUID: {session_id}"
 
 
-def test_x_session_id_consistent_with_body_session_id_on_health(client: TestClient):
-    """
-    The health endpoint puts its own session_id in the body.
-    The middleware generates a separate x-session-id header.
-    Both should be present and be valid UUIDs — they may differ.
-    """
+def test_x_session_id_matches_body_session_id_on_health(client: TestClient):
+    """The body session_id comes from request.state, set once by the middleware."""
     response = client.get("/api/v1/health")
-    body_session_id   = response.json()["session_id"]
-    header_session_id = response.headers["x-session-id"]
-    assert body_session_id
-    assert header_session_id
+    assert response.json()["session_id"] == response.headers["x-session-id"]
 
 
 # ---------------------------------------------------------------------------
@@ -203,3 +196,144 @@ def test_each_request_gets_distinct_session_id(client: TestClient):
     """Five sequential requests must produce five distinct session IDs."""
     ids = {client.get("/api/v1/health").headers["x-session-id"] for _ in range(5)}
     assert len(ids) == 5
+
+
+# ---------------------------------------------------------------------------
+# Metric label cardinality / in-flight gauge
+# ---------------------------------------------------------------------------
+
+
+def _route_labels(monkeypatch) -> list[str]:
+    from src.adapters.http import middleware
+
+    seen: list[str] = []
+    real = middleware._record
+
+    def spy(instr, method, route, *args):
+        seen.append(route)
+        return real(instr, method, route, *args)
+
+    monkeypatch.setattr(middleware, "_record", spy)
+    return seen
+
+
+def test_unmatched_paths_share_one_route_label(client: TestClient, monkeypatch):
+    seen = _route_labels(monkeypatch)
+    client.get("/scanner/probe-1")
+    client.get("/scanner/probe-2")
+    assert seen == ["unmatched", "unmatched"]
+
+
+def test_path_params_resolve_to_template_in_metric_label(client: TestClient, monkeypatch):
+    seen = _route_labels(monkeypatch)
+    client.get("/api/v1/items/abc")
+    client.get("/api/v1/items/xyz")
+    client.get("/api/v1/health")
+    client.get("/docs")
+    assert seen == [
+        "/api/v1/items/{item_id}",
+        "/api/v1/items/{item_id}",
+        "/api/v1/health",
+        "/docs",
+    ]
+
+
+def test_active_requests_decremented_when_handler_raises(client: TestClient, monkeypatch):
+    from src.adapters.http import middleware
+
+    calls: list[int] = []
+
+    class _Gauge:
+        def add(self, value, labels=None):
+            calls.append(value)
+
+    instr = dict(middleware._get_instruments())
+    instr["active_requests"] = _Gauge()
+    monkeypatch.setattr(middleware, "_instruments", instr)
+
+    from fastapi.testclient import TestClient as TC
+    from src.main import app
+
+    @app.get("/__boom")
+    async def _boom():
+        raise RuntimeError("boom")
+
+    try:
+        with TC(app, raise_server_exceptions=False) as c:
+            assert c.get("/__boom").status_code == 500
+    finally:
+        app.router.routes = [r for r in app.router.routes if getattr(r, "path", "") != "/__boom"]
+    assert calls == [1, -1]
+
+
+# ---------------------------------------------------------------------------
+# Streaming support (pure ASGI middleware)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_streaming_response_counts_bytes_and_returns_gauge_to_zero(monkeypatch, event_bus):
+    from src.adapters.http import middleware
+    from src.main import app
+    from tests.asgi_helpers import OpenStream
+    from tests.conftest import make_token
+
+    adds: list[int] = []
+    recorded: list[tuple] = []
+
+    class _Gauge:
+        def add(self, value, labels=None):
+            adds.append(value)
+
+    instr = dict(middleware._get_instruments())
+    instr["active_requests"] = _Gauge()
+    monkeypatch.setattr(middleware, "_instruments", instr)
+    real = middleware._record
+    monkeypatch.setattr(middleware, "_record", lambda *a: (recorded.append(a), real(*a))[1])
+
+    import asyncio
+
+    headers = {"Authorization": f"Bearer {make_token(scopes=['events:read'])}"}
+    stream = OpenStream(app, "/api/v1/events/stream", headers)
+    await stream.read_until(b"retry")
+    assert adds == [1]  # in flight while the stream is open
+    await asyncio.sleep(0.05)
+    await event_bus.publish("items", "e", {"k": "v"})
+    await stream.read_until(b'"k": "v"')
+    await stream.disconnect()
+
+    assert adds == [1, -1]
+    _, method, route, status, _, size = recorded[-1]
+    assert (method, route, status) == ("GET", "/api/v1/events/stream", 200)
+    assert size > 0  # counted from the body chunks, not a content-length header
+
+
+def test_websocket_connection_is_logged_with_close_code(client, caplog):
+    import logging
+
+    from src.api.auth import create_ws_ticket
+    from src.api.models import TokenPayload
+    from starlette.websockets import WebSocketDisconnect
+
+    ticket = create_ws_ticket(TokenPayload(sub="u", exp=9_999_999_999, scopes=["events:read"]))[0]
+    with caplog.at_level(logging.INFO, logger="src.adapters.http.middleware"):
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("/api/v1/ws?ticket=bad") as ws:
+                ws.receive_json()
+    assert any(
+        "WEBSOCKET /api/v1/ws closed code=4401" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_websocket_route_label_has_single_prefix(client, monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+
+    from src.adapters.http import middleware
+
+    seen: list[str] = []
+    real = middleware._route_template
+    monkeypatch.setattr(middleware, "_route_template", lambda conn: (seen.append(real(conn)), seen[-1])[1])
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/api/v1/ws") as ws:
+            ws.receive_json()
+    assert seen and set(seen) == {"/api/v1/ws"}
