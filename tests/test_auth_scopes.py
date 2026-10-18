@@ -1,7 +1,7 @@
 """
 Tests for scope-based authorisation on write endpoints.
 
-Read endpoints (GET) require only a valid token.
+Read endpoints (GET) require the "items:read" scope.
 Write endpoints (POST, PUT, DELETE) require the "items:write" scope.
 """
 import pytest
@@ -9,20 +9,38 @@ from fastapi.testclient import TestClient
 
 
 # ---------------------------------------------------------------------------
-# Read endpoints — any valid token, no scope required
+# Read endpoints — require "items:read" scope
 # ---------------------------------------------------------------------------
 
 
-def test_list_items_read_scope_not_required(auth_client: TestClient, auth_headers: dict):
-    """GET /items succeeds with a token that has no scopes."""
+def test_list_items_requires_read_scope(auth_client: TestClient, auth_headers: dict):
+    """GET /items returns 403 when the token has no scopes."""
     response = auth_client.get("/api/v1/items", headers=auth_headers)
+    assert response.status_code == 403
+    assert response.json()["detail"]["error_code"] == "INSUFFICIENT_SCOPE"
+
+
+def test_list_items_succeeds_with_read_scope(auth_client: TestClient, read_headers: dict):
+    response = auth_client.get("/api/v1/items", headers=read_headers)
     assert response.status_code == 200
 
 
-def test_get_item_read_scope_not_required(auth_client: TestClient, auth_headers: dict):
-    """GET /items/{id} returns 404 (not 403) for a token with no scopes."""
+def test_get_item_requires_read_scope(auth_client: TestClient, auth_headers: dict):
+    """GET /items/{id} returns 403 (not 404) for a token with no scopes."""
     response = auth_client.get("/api/v1/items/nonexistent", headers=auth_headers)
+    assert response.status_code == 403
+
+
+def test_get_item_succeeds_with_read_scope(auth_client: TestClient, read_headers: dict):
+    """With items:read the request reaches the handler (404 for a missing item)."""
+    response = auth_client.get("/api/v1/items/nonexistent", headers=read_headers)
     assert response.status_code == 404
+
+
+def test_write_only_token_cannot_read(auth_client: TestClient):
+    from tests.conftest import make_token
+    headers = {"Authorization": f"Bearer {make_token(scopes=['items:write'])}"}
+    assert auth_client.get("/api/v1/items", headers=headers).status_code == 403
 
 
 # ---------------------------------------------------------------------------

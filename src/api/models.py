@@ -81,6 +81,7 @@ class TokenPayload(BaseModel):
     sub: str = Field(..., description="Subject — typically a user ID or email")
     exp: int = Field(..., description="Expiry timestamp (Unix epoch)")
     iat: Optional[int] = Field(default=None, description="Issued-at timestamp (Unix epoch)")
+    scopes: list[str] = Field(default_factory=list, description="Granted authorisation scopes")
 
 # --- File Upload Models ---
 

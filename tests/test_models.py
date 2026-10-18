@@ -195,6 +195,15 @@ def test_token_payload_with_iat():
     assert payload.iat == 1_000_000_000
 
 
+def test_token_payload_scopes_default_empty():
+    assert TokenPayload(sub="u", exp=9_999_999_999).scopes == []
+
+
+def test_token_payload_with_scopes():
+    payload = TokenPayload(sub="u", exp=9_999_999_999, scopes=["items:read"])
+    assert payload.scopes == ["items:read"]
+
+
 def test_token_payload_requires_sub():
     with pytest.raises(ValidationError):
         TokenPayload(exp=9_999_999_999)  # type: ignore[call-arg]

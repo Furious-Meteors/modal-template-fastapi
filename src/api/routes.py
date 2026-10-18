@@ -2,13 +2,14 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from src.api.auth import get_current_user, require_scope
+from src.api.auth import require_scope
 from src.api.models import (
     HealthCheckResponse,
     HealthStatus,
     ItemRequest,
     ItemResponse,
     PaginatedItemsResponse,
+    TokenPayload,
 )
 from src.core.services.item_service import ItemService
 from src.deps import get_item_service
@@ -35,7 +36,7 @@ async def list_items(
     limit: int = Query(100, ge=1, le=MAX_PAGE_SIZE, description="Maximum items to return"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     service: ItemService = Depends(get_item_service),
-    current_user: dict = Depends(get_current_user),
+    current_user: TokenPayload = Depends(require_scope("items:read")),
 ):
     items, total = await service.list(limit=limit, offset=offset)
     return PaginatedItemsResponse(
@@ -51,7 +52,7 @@ async def list_items(
 async def get_item(
     item_id: str,
     service: ItemService = Depends(get_item_service),
-    current_user: dict = Depends(get_current_user),
+    current_user: TokenPayload = Depends(require_scope("items:read")),
 ):
     item = await service.get(item_id)
     if item is None:
@@ -76,7 +77,7 @@ async def get_item(
 async def create_item(
     request: ItemRequest,
     service: ItemService = Depends(get_item_service),
-    current_user: dict = Depends(require_scope("items:write")),
+    current_user: TokenPayload = Depends(require_scope("items:write")),
 ):
     item = await service.create(
         name=request.name,
@@ -96,7 +97,7 @@ async def update_item(
     item_id: str,
     request: ItemRequest,
     service: ItemService = Depends(get_item_service),
-    current_user: dict = Depends(require_scope("items:write")),
+    current_user: TokenPayload = Depends(require_scope("items:write")),
 ):
     item = await service.update(
         item_id=item_id,
@@ -125,7 +126,7 @@ async def update_item(
 async def delete_item(
     item_id: str,
     service: ItemService = Depends(get_item_service),
-    current_user: dict = Depends(require_scope("items:write")),
+    current_user: TokenPayload = Depends(require_scope("items:write")),
 ):
     if not await service.delete(item_id):
         raise HTTPException(

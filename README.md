@@ -168,8 +168,8 @@ git push origin feat/my-feature
 | Method | Endpoint | Auth | Scope | Description |
 |---|---|---|---|---|
 | `GET` | `/api/v1/health` | None | — | Service health check |
-| `GET` | `/api/v1/items` | JWT | — | List items (paginated) |
-| `GET` | `/api/v1/items/{id}` | JWT | — | Get a single item |
+| `GET` | `/api/v1/items` | JWT | `items:read` | List items (paginated) |
+| `GET` | `/api/v1/items/{id}` | JWT | `items:read` | Get a single item |
 | `POST` | `/api/v1/items` | JWT | `items:write` | Create an item |
 | `PUT` | `/api/v1/items/{id}` | JWT | `items:write` | Update an item |
 | `DELETE` | `/api/v1/items/{id}` | JWT | `items:write` | Delete an item |
@@ -185,7 +185,7 @@ git push origin feat/my-feature
 }
 ```
 
-**JWT scopes:** include `"scopes": ["items:read", "items:write"]` in your JWT payload. Read endpoints accept any valid token; write endpoints require `items:write`.
+**JWT scopes:** include `"scopes": ["items:read", "items:write"]` in your JWT payload. Read endpoints (`GET`) require `items:read`; write endpoints require `items:write`. Tokens must carry `exp` and `sub`; set `JWT_AUDIENCE` / `JWT_ISSUER` to also enforce `aud` / `iss`. `JWT_SECRET` must be at least 32 characters.
 
 Generate a token for testing:
 ```bash
@@ -201,11 +201,11 @@ python scripts/jwt_token_generator.py --secret <JWT_SECRET>
 The template uses **JWT Bearer tokens** with scope-based authorisation.
 
 ```python
-# Any valid token — read access
-current_user: dict = Depends(get_current_user)
+# Requires "items:read" scope in JWT payload
+current_user: TokenPayload = Depends(require_scope("items:read"))
 
 # Requires "items:write" scope in JWT payload
-current_user: dict = Depends(require_scope("items:write"))
+current_user: TokenPayload = Depends(require_scope("items:write"))
 ```
 
 **JWT payload shape:**
