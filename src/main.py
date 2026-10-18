@@ -7,9 +7,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from src.api.auth import validate_auth_config
 from src.api.models import ErrorDetail
 from src.api.routes import router
 from src.adapters.http.middleware import TelemetryMiddleware
+from src.deps import init_dependencies
 from src.utils.config import APP_DESCRIPTION, APP_VERSION, CORS_ORIGINS, SERVER_PREFIX, SERVICE_TITLE
 
 logging.basicConfig(level=logging.INFO)
@@ -18,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail fast: a misconfigured container should not start serving.
+    validate_auth_config()
+    init_dependencies()
     logger.info(f"Starting {SERVICE_TITLE}")
     yield
     logger.info(f"Shutting down {SERVICE_TITLE}")

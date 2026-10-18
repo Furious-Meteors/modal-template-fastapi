@@ -3,6 +3,10 @@ src/adapters/persistence/memory.py
 ====================================
 In-memory persistence adapter — ships with the template.
 
+DEVELOPMENT AND TESTS ONLY. Each process/container holds its own private store,
+so under Modal autoscaling requests can hit containers with different data, and
+everything is lost on scale-down. Not suitable for multi-container deployments.
+
 Satisfies ItemRepository Protocol structurally (no inheritance needed).
 Replace or supplement with a concrete DB adapter in src/deps.py.
 

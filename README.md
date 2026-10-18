@@ -1,11 +1,11 @@
 # modal-template-fastapi
 
-> A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT authentication with scope-based authorisation, paginated CRUD API, telemetry sidecar pattern, OpenTelemetry observability with Grafana Cloud, 145-test pytest suite, and automated CI/CD.
+> A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT authentication with scope-based authorisation, paginated CRUD API, telemetry sidecar pattern, OpenTelemetry observability with Grafana Cloud, 179-test pytest suite, and automated CI/CD.
 
 [![Python](https://img.shields.io/badge/Python-3.11-4f46e5?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-latest-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Modal](https://img.shields.io/badge/Modal-Serverless-7c3aed?style=flat-square)](https://modal.com)
-[![Tests](https://img.shields.io/badge/Tests-145%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-179%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-enabled-f5a800?style=flat-square&logo=opentelemetry&logoColor=white)](src/infrastructure/)
 [![Grafana](https://img.shields.io/badge/Grafana-Cloud-f46800?style=flat-square&logo=grafana&logoColor=white)](docs/OBSERVABILITY.md)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-4f46e5?style=flat-square&logo=materialformkdocs&logoColor=white)](https://your-org.github.io/modal-template-fastapi/)
@@ -32,7 +32,7 @@ The template is built on **Hexagonal Architecture (Ports & Adapters)** so every 
 - ☁️ **Modal serverless** — `feat` / `dev` / `prod` environments via `EnvConfig`, memory snapshots for fast cold starts
 - 🌐 **CORS per-environment** — `cors_origins` field per `EnvConfig`, propagated through env vars
 - 🔌 **Platform-decoupled** — `src/` has zero Modal imports; runs on any ASGI host unchanged
-- ✅ **145-test pytest suite** — isolated per-test repositories, no stubs, runs in < 0.3 seconds
+- ✅ **179-test pytest suite** — isolated per-test repositories, no stubs, runs in < 0.3 seconds
 - 🚀 **GitHub Actions CI/CD** — branch-based environment routing, tests gate every deploy
 
 ---
@@ -163,6 +163,8 @@ git push origin feat/my-feature
 
 ---
 
+> ⚠️ **In-memory persistence is for development and tests only.** The default `InMemoryItemRepository` keeps data per container, so under Modal autoscaling requests can see different data and everything is lost on scale-down. Swap in a real adapter (see `src/deps.py`) before deploying. A warning is logged at startup when `PERSISTENCE_BACKEND=memory` and `MODAL_ENV=prod`.
+
 ## API Reference
 
 | Method | Endpoint | Auth | Scope | Description |
@@ -185,7 +187,7 @@ git push origin feat/my-feature
 }
 ```
 
-**JWT scopes:** include `"scopes": ["items:read", "items:write"]` in your JWT payload. Read endpoints (`GET`) require `items:read`; write endpoints require `items:write`. Tokens must carry `exp` and `sub`; set `JWT_AUDIENCE` / `JWT_ISSUER` to also enforce `aud` / `iss`. `JWT_SECRET` must be at least 32 characters.
+**JWT scopes:** include `"scopes": ["items:read", "items:write"]` in your JWT payload. Read endpoints (`GET`) require `items:read`; write endpoints require `items:write`. Tokens must carry `exp` and `sub`; set `JWT_AUDIENCE` / `JWT_ISSUER` to also enforce `aud` / `iss`. `JWT_SECRET` must be at least 32 characters; it, `PERSISTENCE_BACKEND` and its required env vars are validated at startup, so a bad config stops the container instead of failing the first request.
 
 Generate a token for testing:
 ```bash
