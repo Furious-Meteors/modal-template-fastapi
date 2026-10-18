@@ -1,8 +1,7 @@
-import uuid
-
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 
 from src.api.auth import require_scope
+from src.api.errors import AppError, get_session_id
 from src.api.models import (
     ErrorDetail,
     HealthCheckResponse,
@@ -12,31 +11,23 @@ from src.api.models import (
     PaginatedItemsResponse,
     TokenPayload,
 )
-from src.core.domain.errors import DuplicateItemNameError
 from src.core.services.item_service import ItemService
 from src.deps import get_item_service
 from src.utils.config import APP_ENV, APP_NAME, APP_VERSION
 
 router = APIRouter()
 
-
-def _duplicate_name_error(exc: DuplicateItemNameError) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=ErrorDetail(
-            detail=str(exc),
-            session_id=str(uuid.uuid4()),
-            error_code="ITEM_NAME_EXISTS",
-        ).model_dump(),
-    )
-
 MAX_PAGE_SIZE = 500
 
 
+def _item_not_found(item_id: str) -> AppError:
+    return AppError(404, "ITEM_NOT_FOUND", f"Item '{item_id}' not found")
+
+
 @router.get("/health", response_model=HealthCheckResponse, tags=["Health"])
-async def health_check():
+async def health_check(session_id: str = Depends(get_session_id)):
     return HealthCheckResponse(
-        session_id=str(uuid.uuid4()),
+        session_id=session_id,
         status=HealthStatus.HEALTHY,
         service_name=f"{APP_NAME}-{APP_ENV}",
         version=APP_VERSION,
@@ -49,6 +40,7 @@ async def list_items(
     limit: int = Query(100, ge=1, le=MAX_PAGE_SIZE, description="Maximum items to return"),
     offset: int = Query(0, ge=0, description="Number of items to skip"),
     service: ItemService = Depends(get_item_service),
+    session_id: str = Depends(get_session_id),
     current_user: TokenPayload = Depends(require_scope("items:read")),
 ):
     items, total = await service.list(limit=limit, offset=offset)
@@ -65,16 +57,14 @@ async def list_items(
 async def get_item(
     item_id: str,
     service: ItemService = Depends(get_item_service),
+    session_id: str = Depends(get_session_id),
     current_user: TokenPayload = Depends(require_scope("items:read")),
 ):
     item = await service.get(item_id)
     if item is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Item '{item_id}' not found",
-        )
+        raise _item_not_found(item_id)
     return ItemResponse(
-        session_id=str(uuid.uuid4()),
+        session_id=session_id,
         status="success",
         message="Item retrieved successfully",
         data=item.to_dict(),
@@ -91,18 +81,16 @@ async def get_item(
 async def create_item(
     request: ItemRequest,
     service: ItemService = Depends(get_item_service),
+    session_id: str = Depends(get_session_id),
     current_user: TokenPayload = Depends(require_scope("items:write")),
 ):
-    try:
-        item = await service.create(
-            name=request.name,
-            description=request.description,
-            project_id=request.project_id,
-        )
-    except DuplicateItemNameError as exc:
-        raise _duplicate_name_error(exc)
+    item = await service.create(
+        name=request.name,
+        description=request.description,
+        project_id=request.project_id,
+    )
     return ItemResponse(
-        session_id=str(uuid.uuid4()),
+        session_id=session_id,
         status="created",
         message="Item created successfully",
         data=item.to_dict(),
@@ -119,24 +107,19 @@ async def update_item(
     item_id: str,
     request: ItemRequest,
     service: ItemService = Depends(get_item_service),
+    session_id: str = Depends(get_session_id),
     current_user: TokenPayload = Depends(require_scope("items:write")),
 ):
-    try:
-        item = await service.update(
-            item_id=item_id,
-            name=request.name,
-            description=request.description,
-            project_id=request.project_id,
-        )
-    except DuplicateItemNameError as exc:
-        raise _duplicate_name_error(exc)
+    item = await service.update(
+        item_id=item_id,
+        name=request.name,
+        description=request.description,
+        project_id=request.project_id,
+    )
     if item is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Item '{item_id}' not found",
-        )
+        raise _item_not_found(item_id)
     return ItemResponse(
-        session_id=str(uuid.uuid4()),
+        session_id=session_id,
         status="updated",
         message="Item updated successfully",
         data=item.to_dict(),
@@ -154,7 +137,4 @@ async def delete_item(
     current_user: TokenPayload = Depends(require_scope("items:write")),
 ):
     if not await service.delete(item_id):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Item '{item_id}' not found",
-        )
+        raise _item_not_found(item_id)

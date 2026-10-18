@@ -1,11 +1,11 @@
 # modal-template-fastapi
 
-> A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT authentication with scope-based authorisation, paginated CRUD API, telemetry sidecar pattern, OpenTelemetry observability with Grafana Cloud, 187-test pytest suite, and automated CI/CD.
+> A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT authentication with scope-based authorisation, paginated CRUD API, telemetry sidecar pattern, OpenTelemetry observability with Grafana Cloud, 205-test pytest suite, and automated CI/CD.
 
 [![Python](https://img.shields.io/badge/Python-3.11-4f46e5?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-latest-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Modal](https://img.shields.io/badge/Modal-Serverless-7c3aed?style=flat-square)](https://modal.com)
-[![Tests](https://img.shields.io/badge/Tests-187%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-205%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-enabled-f5a800?style=flat-square&logo=opentelemetry&logoColor=white)](src/infrastructure/)
 [![Grafana](https://img.shields.io/badge/Grafana-Cloud-f46800?style=flat-square&logo=grafana&logoColor=white)](docs/OBSERVABILITY.md)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-4f46e5?style=flat-square&logo=materialformkdocs&logoColor=white)](https://your-org.github.io/modal-template-fastapi/)
@@ -32,7 +32,7 @@ The template is built on **Hexagonal Architecture (Ports & Adapters)** so every 
 - ☁️ **Modal serverless** — `feat` / `dev` / `prod` environments via `EnvConfig`, memory snapshots for fast cold starts
 - 🌐 **CORS per-environment** — `cors_origins` field per `EnvConfig`, propagated through env vars
 - 🔌 **Platform-decoupled** — `src/` has zero Modal imports; runs on any ASGI host unchanged
-- ✅ **187-test pytest suite** — isolated per-test repositories, no stubs, runs in < 0.3 seconds
+- ✅ **205-test pytest suite** — isolated per-test repositories, no stubs, runs in < 0.3 seconds
 - 🚀 **GitHub Actions CI/CD** — branch-based environment routing, tests gate every deploy
 
 ---
@@ -60,6 +60,7 @@ modal-template-fastapi/
 │   │       └── tracing_proxy.py      # TracingProxy — generic outbound port sidecar
 │   ├── api/                           # HTTP layer — routes, schemas, auth
 │   │   ├── auth.py                   # JWT verification + get_current_user + require_scope
+│   │   ├── errors.py                 # AppError, unified error handlers, get_session_id
 │   │   ├── models.py                 # Pydantic v2 request/response schemas
 │   │   └── routes.py                 # API endpoints — delegates to ItemService
 │   ├── infrastructure/                # Cross-cutting setup — runs once at startup
@@ -67,7 +68,7 @@ modal-template-fastapi/
 │   │   └── metrics.py                # Domain metric instruments stub (replace per service)
 │   └── utils/
 │       └── config.py                 # App constants read from env vars
-├── tests/                             # pytest suite (145 tests)
+├── tests/                             # pytest suite (205 tests)
 │   ├── conftest.py                   # Fixtures: fresh repo per test, JWT helpers, scope tokens
 │   ├── test_auth.py                  # JWT authentication tests
 │   ├── test_auth_scopes.py           # Scope-based authorisation tests
@@ -221,7 +222,7 @@ current_user: TokenPayload = Depends(require_scope("items:write"))
 }
 ```
 
-**Error codes:** `MISSING_TOKEN` (401), `TOKEN_EXPIRED` (401), `INVALID_TOKEN` (401), `INSUFFICIENT_SCOPE` (403), `ITEM_NAME_EXISTS` (409).
+**Errors:** every error response is the same flat body — `{"detail", "session_id", "error_code"}`, plus an `errors` list of `{field, message, type}` for validation failures. `session_id` always matches the `x-session-id` response header. Codes: `MISSING_TOKEN` / `TOKEN_EXPIRED` / `INVALID_TOKEN` (401), `INSUFFICIENT_SCOPE` (403), `ITEM_NOT_FOUND` / `NOT_FOUND` (404), `METHOD_NOT_ALLOWED` (405), `ITEM_NAME_EXISTS` (409), `VALIDATION_ERROR` (422), `INTERNAL_ERROR` (500).
 
 **Modal secret setup:**
 ```bash

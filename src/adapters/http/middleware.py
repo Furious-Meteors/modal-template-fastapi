@@ -139,10 +139,11 @@ class TelemetryMiddleware(BaseHTTPMiddleware):
         route   = _route_template(request)
         method  = request.method
         t_start = time.perf_counter()
-        # Generate once per request so the span always has a non-empty session_id.
-        # setdefault below lets a route override this with its own value if it sets
-        # the x-session-id header explicitly — the middleware value is the fallback.
+        # Single source of truth for the request's session ID. Routes and error
+        # handlers read it from request.state.session_id, so the response body,
+        # the x-session-id header and the span attribute always agree.
         req_session_id = str(uuid.uuid4())
+        request.state.session_id = req_session_id
 
         # ── In-flight gauge ───────────────────────────────────────────
         try:
@@ -186,12 +187,10 @@ class TelemetryMiddleware(BaseHTTPMiddleware):
             status = response.status_code
             span.set_attribute(SpanAttributes.HTTP_STATUS_CODE, status)
 
-            # Guarantee x-session-id is always present on the response so the span
-            # is never empty and callers can correlate by this header.
-            response.headers.setdefault("x-session-id", req_session_id)
-            session_id = response.headers.get("x-session-id", "")
-            if session_id:
-                span.set_attribute("app.session_id", session_id)
+            # Always present on the response so callers can correlate by this header.
+            response.headers["x-session-id"] = req_session_id
+            session_id = req_session_id
+            span.set_attribute("app.session_id", session_id)
 
             if status >= 400:
                 span.set_status(StatusCode.ERROR, f"HTTP {status}")

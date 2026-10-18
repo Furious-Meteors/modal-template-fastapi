@@ -17,7 +17,7 @@ def test_list_items_requires_read_scope(auth_client: TestClient, auth_headers: d
     """GET /items returns 403 when the token has no scopes."""
     response = auth_client.get("/api/v1/items", headers=auth_headers)
     assert response.status_code == 403
-    assert response.json()["detail"]["error_code"] == "INSUFFICIENT_SCOPE"
+    assert response.json()["error_code"] == "INSUFFICIENT_SCOPE"
 
 
 def test_list_items_succeeds_with_read_scope(auth_client: TestClient, read_headers: dict):
@@ -56,7 +56,7 @@ def test_create_requires_write_scope(auth_client: TestClient, auth_headers: dict
 
 def test_create_requires_write_scope_error_code(auth_client: TestClient, auth_headers: dict):
     response = auth_client.post("/api/v1/items", json={"name": "x"}, headers=auth_headers)
-    assert response.json()["detail"]["error_code"] == "INSUFFICIENT_SCOPE"
+    assert response.json()["error_code"] == "INSUFFICIENT_SCOPE"
 
 
 def test_create_succeeds_with_write_scope(auth_client: TestClient, write_headers: dict):

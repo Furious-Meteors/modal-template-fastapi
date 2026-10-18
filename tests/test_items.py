@@ -296,7 +296,7 @@ def test_create_duplicate_name_returns_409(client: TestClient):
     _create_item(client, name="dup")
     response = client.post("/api/v1/items", json={"name": "dup"})
     assert response.status_code == 409
-    detail = response.json()["detail"]
+    detail = response.json()
     assert detail["error_code"] == "ITEM_NAME_EXISTS"
     assert "dup" in detail["detail"]
 
@@ -331,7 +331,7 @@ def test_update_to_existing_name_returns_409(client: TestClient):
     other_id = _create_item(client, name="other")["data"]["id"]
     response = client.put(f"/api/v1/items/{other_id}", json={"name": "taken"})
     assert response.status_code == 409
-    assert response.json()["detail"]["error_code"] == "ITEM_NAME_EXISTS"
+    assert response.json()["error_code"] == "ITEM_NAME_EXISTS"
 
 
 def test_update_keeping_own_name_is_allowed(client: TestClient):

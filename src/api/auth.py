@@ -1,13 +1,12 @@
 import os
-import uuid
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-
 from pydantic import ValidationError
 
-from src.api.models import ErrorDetail, TokenPayload
+from src.api.errors import AppError
+from src.api.models import TokenPayload
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -51,16 +50,11 @@ def _decode_options() -> dict:
     return kwargs
 
 
-def _invalid_token() -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail=ErrorDetail(
-            detail="Invalid token",
-            session_id=str(uuid.uuid4()),
-            error_code="INVALID_TOKEN",
-        ).model_dump(),
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+_BEARER_HEADERS = {"WWW-Authenticate": "Bearer"}
+
+
+def _unauthorized(error_code: str, message: str) -> AppError:
+    return AppError(401, error_code, message, headers=_BEARER_HEADERS)
 
 
 def verify_token(token: str) -> TokenPayload:
@@ -75,17 +69,9 @@ def verify_token(token: str) -> TokenPayload:
         )
         return TokenPayload.model_validate(claims)
     except jwt.ExpiredSignatureError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ErrorDetail(
-                detail="Token has expired",
-                session_id=str(uuid.uuid4()),
-                error_code="TOKEN_EXPIRED",
-            ).model_dump(),
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise _unauthorized("TOKEN_EXPIRED", "Token has expired")
     except (jwt.InvalidTokenError, ValidationError):
-        raise _invalid_token()
+        raise _unauthorized("INVALID_TOKEN", "Invalid token")
 
 
 def get_current_user(
@@ -93,15 +79,7 @@ def get_current_user(
 ) -> TokenPayload:
     """FastAPI dependency — extracts and validates the Bearer JWT."""
     if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ErrorDetail(
-                detail="Authorization header missing or malformed",
-                session_id=str(uuid.uuid4()),
-                error_code="MISSING_TOKEN",
-            ).model_dump(),
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise _unauthorized("MISSING_TOKEN", "Authorization header missing or malformed")
     return verify_token(credentials.credentials)
 
 
@@ -125,13 +103,10 @@ def require_scope(*scopes: str):
         token_scopes = set(current_user.scopes)
         missing = set(scopes) - token_scopes
         if missing:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=ErrorDetail(
-                    detail=f"Missing required scopes: {', '.join(sorted(missing))}",
-                    session_id=str(uuid.uuid4()),
-                    error_code="INSUFFICIENT_SCOPE",
-                ).model_dump(),
+            raise AppError(
+                403,
+                "INSUFFICIENT_SCOPE",
+                f"Missing required scopes: {', '.join(sorted(missing))}",
             )
         return current_user
     return _check

@@ -31,6 +31,27 @@ components:
           type: string
           nullable: true
           description: Error code for programmatic handling
+        errors:
+          type: array
+          nullable: true
+          description: Per-field details; present only for validation errors
+          items:
+            $ref: "#/components/schemas/FieldError"
+
+    FieldError:
+      type: object
+      required:
+        - field
+        - message
+        - type
+      properties:
+        field:
+          type: string
+          description: Dotted location, e.g. body.name or query.limit
+        message:
+          type: string
+        type:
+          type: string
 
     GenericRequest:
       type: object

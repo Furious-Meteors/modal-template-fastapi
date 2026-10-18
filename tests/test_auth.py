@@ -19,7 +19,7 @@ def test_no_token_returns_401(auth_client: TestClient):
 
 
 def test_no_token_error_code(auth_client: TestClient):
-    detail = auth_client.get("/api/v1/items").json()["detail"]
+    detail = auth_client.get("/api/v1/items").json()
     assert detail["error_code"] == "MISSING_TOKEN"
 
 
@@ -31,7 +31,7 @@ def test_malformed_bearer_value_returns_401(auth_client: TestClient):
 def test_malformed_bearer_error_code(auth_client: TestClient):
     detail = auth_client.get(
         "/api/v1/items", headers={"Authorization": "Bearer not-a-jwt"}
-    ).json()["detail"]
+    ).json()
     assert detail["error_code"] == "INVALID_TOKEN"
 
 
@@ -56,7 +56,7 @@ def test_expired_token_returns_401(auth_client: TestClient, expired_token: str):
 def test_expired_token_error_code(auth_client: TestClient, expired_token: str):
     detail = auth_client.get(
         "/api/v1/items", headers={"Authorization": f"Bearer {expired_token}"}
-    ).json()["detail"]
+    ).json()
     assert detail["error_code"] == "TOKEN_EXPIRED"
 
 
@@ -75,7 +75,7 @@ def test_wrong_secret_returns_401(auth_client: TestClient, wrong_secret_token: s
 def test_wrong_secret_error_code(auth_client: TestClient, wrong_secret_token: str):
     detail = auth_client.get(
         "/api/v1/items", headers={"Authorization": f"Bearer {wrong_secret_token}"}
-    ).json()["detail"]
+    ).json()
     assert detail["error_code"] == "INVALID_TOKEN"
 
 
@@ -98,7 +98,7 @@ def test_valid_token_on_post(auth_client: TestClient, write_headers: dict):
 
 
 def test_error_response_includes_session_id(auth_client: TestClient):
-    detail = auth_client.get("/api/v1/items").json()["detail"]
+    detail = auth_client.get("/api/v1/items").json()
     assert "session_id" in detail
     assert detail["session_id"]  # non-empty
 
@@ -116,21 +116,21 @@ def test_token_without_exp_is_rejected(auth_client: TestClient):
     token = make_token(scopes=["items:read"], include_exp=False)
     response = _get(auth_client, token)
     assert response.status_code == 401
-    assert response.json()["detail"]["error_code"] == "INVALID_TOKEN"
+    assert response.json()["error_code"] == "INVALID_TOKEN"
 
 
 def test_token_without_sub_is_rejected(auth_client: TestClient):
     token = make_token(scopes=["items:read"], include_sub=False)
     response = _get(auth_client, token)
     assert response.status_code == 401
-    assert response.json()["detail"]["error_code"] == "INVALID_TOKEN"
+    assert response.json()["error_code"] == "INVALID_TOKEN"
 
 
 def test_token_with_malformed_scopes_claim_is_rejected(auth_client: TestClient):
     token = make_token(extra_claims={"scopes": "items:read"})
     response = _get(auth_client, token)
     assert response.status_code == 401
-    assert response.json()["detail"]["error_code"] == "INVALID_TOKEN"
+    assert response.json()["error_code"] == "INVALID_TOKEN"
 
 
 def test_audience_not_enforced_when_unconfigured(auth_client: TestClient, monkeypatch):

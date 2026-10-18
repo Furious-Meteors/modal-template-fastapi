@@ -20,7 +20,15 @@ class BaseResponse(BaseModel):
         json_schema_extra={'example': "550e8400-e29b-41d4-a716-446655440000"}
     )
 
+class FieldError(BaseModel):
+    """One offending field in a request-validation failure."""
+    field: str = Field(..., description="Dotted location, e.g. 'body.name' or 'query.limit'")
+    message: str = Field(..., description="What is wrong with the value")
+    type: str = Field(..., description="Machine-readable validation error type")
+
+
 class ErrorDetail(BaseModel):
+    """The single error body returned for every error response."""
     detail: str
     session_id: Optional[str] = Field(
         default=None,
@@ -29,6 +37,10 @@ class ErrorDetail(BaseModel):
     error_code: Optional[str] = Field(
         default=None,
         description="Error code for programmatic handling"
+    )
+    errors: Optional[list[FieldError]] = Field(
+        default=None,
+        description="Per-field details; present only for validation errors",
     )
 
 # --- Request/Response Models ---

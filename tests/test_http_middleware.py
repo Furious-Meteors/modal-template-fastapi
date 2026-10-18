@@ -56,17 +56,10 @@ def test_x_session_id_looks_like_uuid(client: TestClient):
     assert re.match(uuid_pattern, session_id), f"Not a UUID: {session_id}"
 
 
-def test_x_session_id_consistent_with_body_session_id_on_health(client: TestClient):
-    """
-    The health endpoint puts its own session_id in the body.
-    The middleware generates a separate x-session-id header.
-    Both should be present and be valid UUIDs — they may differ.
-    """
+def test_x_session_id_matches_body_session_id_on_health(client: TestClient):
+    """The body session_id comes from request.state, set once by the middleware."""
     response = client.get("/api/v1/health")
-    body_session_id   = response.json()["session_id"]
-    header_session_id = response.headers["x-session-id"]
-    assert body_session_id
-    assert header_session_id
+    assert response.json()["session_id"] == response.headers["x-session-id"]
 
 
 # ---------------------------------------------------------------------------
