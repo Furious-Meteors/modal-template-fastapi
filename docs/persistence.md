@@ -80,6 +80,42 @@ multiplexes them, but keep an eye on your plan's client-connection limit.
   schema with the Supabase CLI can apply the same files with `supabase db push`
   and the startup step becomes a no-op.
 
+## Deploy to Modal with Supabase
+
+The Supabase settings reach containers through a Modal secret, never through the
+image (a local `.env` is excluded from it). From your validated `.env`:
+
+```bash
+modal token new                                  # authenticate (or: modal token set)
+python scripts/push_modal_secret.py --dry-run    # shows variable NAMES and masked URLs only
+python scripts/push_modal_secret.py --environment feat   # creates `supabase-db` in the Modal environment "feat"
+```
+
+`--environment` is required for a real push. Modal secrets are scoped per
+environment (`dev`, `feat`, `prod` — the same names `modal deploy --env $MODAL_ENV`
+uses), and the default is whichever environment is active for your profile, which
+is often `prod`.
+
+The script reads `PERSISTENCE_BACKEND`, `EVENT_BUS_BACKEND`, `DATABASE_URL` and
+`EVENT_BUS_LISTEN_URL` from `.env`, refuses an invalid connection string, and uses
+the Modal SDK so values never appear on a command line. It refuses to overwrite an
+existing secret unless you pass `--replace` (containers starting during the swap
+could fail to find it, so rotate between deploys). It deliberately does **not**
+push `JWT_SECRET` or webhook secrets (they live in their own secrets), `TEST_*`
+settings, or the local `DB_POOL_MAX_SIZE`.
+
+The secret is mounted by `persistence_secret_name="supabase-db"` on an environment
+preset in `modal_common.py` (set on `feat`; add it to `dev`/`prod` when ready).
+`modal deploy` fails if a mounted secret does not exist, so create it first.
+Also make sure `fastapi-auth-secrets` holds a `JWT_SECRET` of at least 32 characters:
+the app now refuses to start with a shorter one.
+
+Capacity: every container opens up to `DB_POOL_MAX_SIZE` (default 5, matching the
+per-container concurrency) connections to the pooler plus one `LISTEN` connection.
+Check `containers × (pool + 1)` against your Supabase plan's pooler client limit.
+Put the Supabase project in the same region as your Modal containers: every query
+and every event publish is a network round trip.
+
 ## Run and test locally against Supabase
 
 Credentials live in a local `.env` (git-ignored — only that exact name is — and
