@@ -87,6 +87,10 @@ class EnvConfig:
     # RUNTIME CONFIGURATION
     server_hard_timeout_seconds: int = 150
     min_containers: int = 0
+    # Upper bound on containers. Every container holds up to DB_POOL_MAX_SIZE (+1 LISTEN)
+    # connections to the database pooler, so containers x (pool + 1) must stay under your
+    # Supabase plan's pooler client limit. None = Modal's default (unbounded scale-out).
+    max_containers: Optional[int] = None
     max_concurrent_requests: int = 5
 
     # STREAMING — each open SSE/WebSocket connection holds one concurrent-request
@@ -102,6 +106,10 @@ class EnvConfig:
     # The secret must exist before you deploy; see docs/persistence.md.
     persistence_secret_name: Optional[str] = None
 
+    # WEBHOOKS — name of a Modal secret holding WEBHOOK_SECRET_<PROVIDER> variables.
+    # None = no provider configured, so POST /webhooks/<provider> answers 404.
+    webhook_secret_name: Optional[str] = None
+
     # MODAL RESOURCES
     secrets: list = field(default_factory=list)
     volumes: Dict[str, modal.Volume] = field(default_factory=lambda: FASTAPI_VOLUME)
@@ -115,6 +123,10 @@ class EnvConfig:
     service_name:  Optional[str] = None  # defaults to app_name when None
 
     def __post_init__(self) -> None:
+        if self.max_containers is not None and self.max_containers < 1:
+            raise ValueError(f"max_containers must be >= 1 or None (got {self.max_containers})")
+        if self.max_containers is not None and self.max_containers < self.min_containers:
+            raise ValueError("max_containers must be >= min_containers")
         if not 1 <= self.max_streams < self.max_concurrent_requests:
             raise ValueError(
                 f"max_streams ({self.max_streams}) must be >= 1 and less than "
@@ -130,6 +142,16 @@ class EnvConfig:
 FEAT = EnvConfig(
     env_name="feat",
     server_domain="feat-app.modal.run",
+    # Supabase settings (PERSISTENCE_BACKEND, EVENT_BUS_BACKEND, DATABASE_URL, ...).
+    # The secret must exist in the Modal environment "feat" before `modal deploy`:
+    #   python scripts/push_modal_secret.py --environment feat
+    persistence_secret_name="supabase-db",
+    # Provider secrets for webhooks: python scripts/push_modal_secret.py --environment feat \
+    #     --name webhook-secrets --keys WEBHOOK_SECRET_ACME
+    webhook_secret_name="webhook-secrets",
+    # Pinned to ONE container while the stream cap and rate limits are verified live (both are
+    # per container, so scale-out hides them). Raise it afterwards.
+    max_containers=1,
     cors_origins=["*"],
     otel_endpoint=None,  # endpoint comes from GRAFANA_OTLP_ENDPOINT inside the grafana-otlp secret
     secrets=[
@@ -210,12 +232,15 @@ def build_fastapi_config(env: EnvConfig) -> dict:
         "timeout": env.server_hard_timeout_seconds,
         "secrets": env.secrets
         + ([modal.Secret.from_name(env.persistence_secret_name)] if env.persistence_secret_name else [])
+        + ([modal.Secret.from_name(env.webhook_secret_name)] if env.webhook_secret_name else [])
         + [modal.Secret.from_dict({"MODAL_ENV": env.env_name})],
         "volumes": env.volumes,
         "min_containers": env.min_containers,
         "enable_memory_snapshot": True,
     }
 
+    if env.max_containers is not None:
+        config["max_containers"] = env.max_containers
     if env.gpu_type:
         config["gpu"] = env.gpu_type
 
