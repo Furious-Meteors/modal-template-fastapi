@@ -11,6 +11,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added (Modal + Supabase)
+- `scripts/push_modal_secret.py`: creates the `supabase-db` Modal secret from `.env` via the SDK (values never in argv or output), validates the connection strings first, refuses to overwrite without `--replace`, `--dry-run` shows key names only
+- The `feat` preset mounts `supabase-db` (`persistence_secret_name`); `dev` and `prod` are unchanged. A real push requires an explicit `--environment` (secrets are per Modal environment and the default is often prod)
+
 ### Added (local Supabase testing)
 - `.env` support for local runs: `.env.example`, `scripts/set_supabase_password.py` (hidden prompt, URL-encodes the password), `scripts/check_supabase.py` (read-only preflight that explains common mistakes and never prints the password), `scripts/run_local.py`
 - **Security fix:** `.env` and its variants are now excluded from the Modal image (`modal_common.IMAGE_IGNORE`); previously `add_local_dir(".")` would have shipped a local `.env` into the image. A test checks this with Modal's own pattern matcher
