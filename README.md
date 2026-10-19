@@ -11,14 +11,10 @@
 [![Tests](https://img.shields.io/badge/Tests-205%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-enabled-f5a800?style=flat-square&logo=opentelemetry&logoColor=white)](src/infrastructure/)
 [![Grafana](https://img.shields.io/badge/Grafana-Cloud-f46800?style=flat-square&logo=grafana&logoColor=white)](docs/OBSERVABILITY.md)
-[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-4f46e5?style=flat-square&logo=materialformkdocs&logoColor=white)](https://your-org.github.io/modal-template-fastapi/)
+[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-4f46e5?style=flat-square&logo=materialformkdocs&logoColor=white)](https://furious-meteors.github.io/modal-template-fastapi/)
 [![License](https://img.shields.io/badge/License-MIT-6b7280?style=flat-square)](LICENSE)
 
-**[📖 Full Documentation →](https://your-org.github.io/modal-template-fastapi/)**
-
----
-
-## What is this?
+## Introduction
 
 `modal-template-fastapi` is a battle-tested starting point for shipping Python microservices to the cloud. It combines the ergonomics of FastAPI with Modal's serverless platform — giving you autoscaling, secret management, persistent volumes, and environment-aware deployments without managing any infrastructure.
 
@@ -249,7 +245,8 @@ Telemetry is a **sidecar** — domain and adapters have zero OTel knowledge. Two
 | Sidecar | Where | What it adds |
 |---|---|---|
 | `TelemetryMiddleware` | HTTP boundary | Request span, duration, status, session ID |
-| `TracingProxy` | Port boundary | Child span per repository method call |
+| `TracingProxy` | Port boundary | Child span per repository, event-bus, webhook-store and ticket-store call |
+| `MeteredItemService` / `MeteredEventBus` | Service and bus boundary | Business metrics (below) — `core/` and the routes contain no telemetry |
 
 **Signals recorded automatically — zero per-route code:**
 
@@ -261,8 +258,14 @@ Telemetry is a **sidecar** — domain and adapters have zero OTel knowledge. Two
 | Error rate | `http.server.error.count` counter (4xx + 5xx) |
 | In-flight requests | `http.server.active_requests` up-down counter |
 | Cold starts | `app.container.cold_start.count` — spikes = containers scaling up |
+| Item operations | `app.items.operations` by `operation` (create/get/list/update/delete) and `outcome` (ok/not_found/conflict/unavailable/error); `app.items.operation.duration` (ms) |
+| Event publishing | `app.events.published` by `topic`, `type`, `outcome`; `app.events.publish.duration` (ms) |
+| Event delivery lag | `app.events.delivery.lag` (ms from event creation to delivery to a stream consumer — includes cross-container latency); `app.events.replayed` counts `Last-Event-ID` replays separately |
+| Streams and webhooks | `stream.connections.active/closed` (with close reason), `stream.messages.sent`, `webhook.received` (with outcome), `app.events.subscriptions.dropped` — all recorded by `TelemetryMiddleware` / `MeteredEventBus`, not by the endpoints |
 | Log correlation | Every log line carries `otelTraceID` + `otelSpanID` |
 | W3C trace propagation | Incoming `traceparent` headers respected — spans become children of upstream traces |
+
+**Adding a business metric:** define the instrument and a `record_*` method in `src/infrastructure/metrics.py`, call it from the relevant sidecar in `src/adapters/telemetry/metered.py`, and add a test. Never call it from `core/` or a route; labels must be a small fixed set (never ids or names). FastAPI's own request telemetry is disabled by default (`FASTAPI_NATIVE_TELEMETRY`) so signals are not doubled.
 
 **Environment strategy:** `feat` and `prod` push telemetry; `dev` is silent (zero cost). Controlled by `EnvConfig.telemetry_enabled` — `dev` sets it to `False`, which skips mounting the `grafana-otlp` Modal Secret and forces no-op telemetry providers (`TELEMETRY_ENABLED=false`).
 
@@ -289,10 +292,13 @@ modal secret create grafana-otlp \
 
 ### Add a persistence backend
 
-1. Create `src/adapters/persistence/<backend>.py` — implement `get`, `list`, `create`, `update`, `delete`
+A Postgres adapter (Supabase-ready) ships with the template. To try it locally: `cp .env.example .env`, run `python scripts/set_supabase_password.py` and `python scripts/check_supabase.py`, then `python scripts/run_local.py` (details in the persistence docs). Also — see [Persistence (Postgres / Supabase)](https://your-org.github.io/modal-template-fastapi/persistence/). To add another backend:
+
+1. Create `src/adapters/persistence/<backend>.py` — implement `get`, `get_by_name`, `list`, `create`, `update`, `delete`
 2. Add the backend to `_REQUIRED_ENV` in `src/deps.py` (with its required env vars)
-3. Add an `elif backend == "<backend>"` branch in `_get_repository()`
-4. Set `PERSISTENCE_BACKEND=<backend>` in your Modal secret
+3. Add an `elif backend == "<backend>"` branch in `_get_repository()` (open any connection pool in `init_resources()`, not at import)
+4. Add it to the `repo` fixture in `tests/test_item_repository_contract.py` so it must pass the same behavioural contract
+5. Set `PERSISTENCE_BACKEND=<backend>` in your Modal secret
 
 ### Add a new service
 

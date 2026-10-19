@@ -9,17 +9,30 @@ Three ways to move events across the API boundary. All three sit on one
 | [WebSocket](#websocket) | both | short-lived ticket | Interactive clients that also send messages |
 | [Webhooks](#webhooks) | third party → server | HMAC signature | Receiving events from other systems |
 
-!!! warning "Single-container by default"
-    The shipped `EventBus` and webhook store are **in-memory**. Under Modal
-    autoscaling a stream on container A will not see events published on
-    container B, and duplicate webhooks that land on different containers are
-    not detected. Production logs a warning at startup. Add a shared adapter
-    (Modal `Queue`/`Dict`, Redis, …) before scaling out — see
-    [Adding an event-bus backend](#adding-an-event-bus-backend).
+!!! warning "Set `EVENT_BUS_BACKEND=postgres` before running more than one container"
+    `EVENT_BUS_BACKEND` (default `memory`) selects the **streaming state** as a
+    unit — the event bus, webhook de-duplication and WebSocket ticket replay
+    protection. With `memory` each is private to a container: a stream on
+    container A won't see events published on B, duplicate webhooks landing on
+    different containers aren't detected, and a ticket can be used once per
+    container. Production logs a warning at startup. With `postgres` all three
+    are shared — see [Persistence → Shared streaming state](../persistence.md#shared-streaming-state).
 
 ## Topics and events
 
 Streams subscribe to a **topic**: `items` (default) or `webhooks`.
+
+Subscribing needs `events:read` **plus the topic's scope**, so a stream never
+reveals what the REST API would deny:
+
+| Topic | Extra scope |
+|---|---|
+| `items` | `items:read` |
+| `webhooks` | `webhooks:read` (third-party payloads — grant deliberately) |
+
+For ownership-style rules, `src/api/event_access.py::can_view(event, user)` is
+called for every event and subscriber (default: allow). Override it when events
+belong to individual users.
 
 | Topic | Event types | `data` |
 |---|---|---|
@@ -99,13 +112,15 @@ Optional query parameters: `topic`, `last_event_id` (resume, as for SSE).
 | `1013` | server busy or slow consumer | back off, retry |
 | `4400` | unknown topic | fix the request |
 | `4401` | missing, invalid, expired or already-used ticket | get a new ticket |
-| `4403` | ticket lacks `events:read` | — |
+| `1008` | client sent messages faster than `RATE_WS_MESSAGES_PER_SECOND` | slow down |
+| `4403` | ticket lacks `events:read` or the topic's scope | — |
 
 **Ticket design.** A ticket is a signed JWT with its own audience, so it cannot
 be used as an API token (and API tokens cannot be used as tickets). It carries
-only `events:read`. It is stateless, so any container can verify it; single-use
-is enforced per container on a best-effort basis, with a 30 s lifetime as the
-real bound.
+only your *read* scopes (`events:read`, `items:read`, `webhooks:read` — never a
+write scope). Verification is stateless; single use is enforced by a replay store
+that is shared across containers with `EVENT_BUS_BACKEND=postgres` (per container
+with `memory`). The 30 s lifetime bounds any residual window.
 
 !!! warning "Tickets appear in URLs"
     The ticket is in the query string, so it can show up in access logs (uvicorn
@@ -144,6 +159,7 @@ verifies:
 | Check | Failure |
 |---|---|
 | provider configured | `404 UNKNOWN_WEBHOOK_PROVIDER` |
+| under the per-provider rate limit | `429 RATE_LIMITED` (+ `Retry-After`) |
 | body ≤ `WEBHOOK_MAX_BODY_BYTES` (1 MiB) | `413 PAYLOAD_TOO_LARGE` |
 | timestamp present and numeric | `400 MISSING_TIMESTAMP` / `INVALID_TIMESTAMP` |
 | timestamp within ±`WEBHOOK_TOLERANCE_SECONDS` (300) | `400 STALE_TIMESTAMP` |
@@ -175,11 +191,30 @@ whole life. To keep normal requests from being starved:
 If you need many long-lived connections, raise `max_concurrent_requests` and
 `max_streams` together, or move streaming to its own Modal function.
 
+## Rate limits
+
+In-memory token buckets, **per container** (N containers ⇒ up to N× the rate) —
+abuse protection, not a hard global quota; enforce those at the edge.
+
+| Where | Key | Default |
+|---|---|---|
+| `POST /ws/ticket` | authenticated user | `RATE_TICKET_PER_MINUTE=30` |
+| `POST /webhooks/{provider}` | provider | `RATE_WEBHOOK_PER_MINUTE=1200` (providers retry a 429) |
+| WebSocket client messages | connection | `RATE_WS_MESSAGES_PER_SECOND=10` |
+
+Keys are never client IPs: behind a proxy one IP can be everybody, and limiting
+failed signatures per IP would let an attacker lock out the real sender.
+
 ## Configuration
 
 | Variable | Default | Set by |
 |---|---|---|
-| `EVENT_BUS_BACKEND` | `memory` | Modal secret / env |
+| `EVENT_BUS_BACKEND` | `memory` | `memory` or `postgres` — see [Persistence](../persistence.md#shared-streaming-state) |
+| `EVENT_BUS_LISTEN_URL` | unset | Session-level Postgres URL for instant delivery (postgres only) |
+| `EVENT_BUS_POLL_MS` | 1000 | Poll interval (postgres; safety net when LISTEN is on) |
+| `EVENT_RETENTION_SECONDS` / `EVENT_REPLAY_SIZE` | 3600 / 100 | Event log retention and replay depth (postgres) |
+| `WEBHOOK_IDEMPOTENCY_TTL_SECONDS` | 86400 | How long a webhook id is remembered |
+| `RATE_TICKET_PER_MINUTE` / `RATE_WEBHOOK_PER_MINUTE` / `RATE_WS_MESSAGES_PER_SECOND` | 30 / 1200 / 10 | See [Rate limits](#rate-limits) |
 | `STREAM_MAX_CONNECTIONS` | 50 locally, `max_streams` on Modal | `modal_common.py` |
 | `STREAM_MAX_DURATION_SECONDS` | 120 on Modal | `modal_common.py` |
 | `STREAM_HEARTBEAT_SECONDS` | 15 | env |
@@ -196,22 +231,44 @@ Invalid values (non-integer, < 1) stop the app at startup.
 * One span per HTTP request and **one span per WebSocket connection**
   (`WEBSOCKET /api/v1/ws`, with `websocket.close_code`). There is deliberately no
   per-message span.
-* `stream.connections.active` (gauge, by `transport`), `stream.connections.closed`
-  (by `transport`, `reason`: `client_disconnect`, `max_duration`, `slow_consumer`,
-  `message_too_large`), `stream.messages.sent`, `webhook.received` (by
-  `provider`, `outcome`: `accepted`, `duplicate`, `bad_signature`, `stale`,
-  `bad_timestamp`, `bad_request`, `too_large`).
-* `TelemetryMiddleware` is a pure ASGI middleware so streaming bodies pass
-  through unbuffered and client disconnects reach the endpoint.
+* **Stream and webhook metrics are recorded by the telemetry sidecar**
+  (`TelemetryMiddleware`) from what it sees on the wire — the endpoints contain no
+  telemetry code:
 
-## Adding an event-bus backend
+  | Metric | Labels | Notes |
+  |---|---|---|
+  | `stream.connections.active` | `transport` = `sse`/`websocket` | up-down gauge |
+  | `stream.connections.closed` | `transport`, `reason` | SSE: `client_disconnect`, `server_closed`, `error`. WebSocket: `client_disconnect`, `max_duration` (1001), `rate_limited` (1008), `message_too_large` (1009), `server_busy` (1013), `rejected` (4400/4401/4403), `error`, `other` |
+  | `stream.messages.sent` | `transport` | protocol frames written to the client — SSE body chunks, WebSocket messages — **heartbeats included** |
+  | `webhook.received` | `provider`, `outcome` | `accepted`, `duplicate`, `bad_signature`, `stale`, `bad_timestamp`, `bad_request`, `too_large`, `rate_limited`, `error` |
+  | `app.events.subscriptions.dropped` | `topic`, `reason=ended_by_bus` | the bus ended a subscription because its consumer fell behind |
+
+  Reasons come from protocol facts (close codes, disconnect messages, the response
+  status and the stable `error_code` the error handler stores on the request). Two
+  consequences: an SSE stream the server ended is just `server_closed` (the
+  sidecar cannot tell the lifetime limit from a slow consumer — the *dropped*
+  counter above is how slow consumers show up), and WebSocket `rejected`
+  connections are counted as opened-then-closed because the handshake is accepted
+  before the ticket is checked. `provider` is only labelled when the response proves
+  the provider is configured, so URL probing cannot create series.
+* Business metrics for the bus come from the `MeteredEventBus` sidecar:
+  `app.events.published`, `app.events.publish.duration`, `app.events.delivery.lag`
+  (event creation → delivery to a stream consumer, so it includes cross-container
+  latency; with the Postgres bus the timestamp is the database server's clock) and
+  `app.events.replayed`.
+* FastAPI's own request telemetry is **disabled** (`FASTAPI_NATIVE_TELEMETRY`,
+  default off): left on it adds a second server span per request and a second
+  `http.server.request.duration` in seconds beside ours in ms. The cost is losing
+  its `fastapi.dependencies/endpoint/serialization` child spans. Set
+  `FASTAPI_NATIVE_TELEMETRY=true` to restore them (you then get both sets).
+
+## Adding another event-bus backend
 
 1. Create `src/adapters/events/<backend>.py` implementing `EventBus`
-   (`src/core/ports/event_bus.py`) — including slow-consumer disconnection and
-   best-effort replay.
-2. Add a branch in `src/deps.py::_get_event_bus` and an entry in
-   `_REQUIRED_EVENT_BUS_ENV` (a commented stub shows where).
+   (`src/core/ports/event_bus.py`), `WebhookEventStore` and `TicketReplayStore`
+   (atomic `record_if_new` / `consume` — e.g. `SET NX` with a TTL). Reuse
+   `tests/test_event_bus.py` and `tests/test_shared_state_contract.py`: add the
+   backend to the fixtures and it must pass the same contract.
+2. Add branches in `src/deps.py` (`_get_event_bus`, `_get_webhook_store`,
+   `_get_ticket_store`) and an entry in `_REQUIRED_EVENT_BUS_ENV`.
 3. Set `EVENT_BUS_BACKEND=<backend>` in your Modal secret.
-
-Provide a shared `WebhookEventStore` the same way (`record_if_new` must be
-atomic — e.g. `SET NX` with a TTL).

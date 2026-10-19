@@ -11,6 +11,47 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added (local Supabase testing)
+- `.env` support for local runs: `.env.example`, `scripts/set_supabase_password.py` (hidden prompt, URL-encodes the password), `scripts/check_supabase.py` (read-only preflight that explains common mistakes and never prints the password), `scripts/run_local.py`
+- **Security fix:** `.env` and its variants are now excluded from the Modal image (`modal_common.IMAGE_IGNORE`); previously `add_local_dir(".")` would have shipped a local `.env` into the image. A test checks this with Modal's own pattern matcher
+- pytest refuses a non-local `TEST_DATABASE_URL` unless `ALLOW_DESTRUCTIVE_DB_TESTS=yes` (the Postgres tests drop tables), reads only `TEST_*` / `DB_POOL_*` from `.env`, and uses a separate `TEST_LISTEN_DATABASE_URL` for LISTEN tests
+- The event bus verifies its LISTEN connection with a probe notification: a connection that succeeds but cannot receive (transaction pooler, wrong database) is detected, logged, and bypassed by polling instead of silently degrading
+
+### Added (business metrics)
+- `src/infrastructure/metrics.py` now defines the business instruments (`app.items.operations`, `app.items.operation.duration`, `app.events.published`, `app.events.publish.duration`, `app.events.delivery.lag`, `app.events.replayed`) with bounded label sets
+- Recorded by telemetry sidecars (`MeteredItemService`, `MeteredEventBus` in `src/adapters/telemetry/metered.py`) wired in `deps.py` like `TracingProxy`; `core/` and the routes contain no telemetry, and a test enforces that
+
+### Changed (metrics moved to the sidecar)
+- Stream and webhook metrics are now recorded by `TelemetryMiddleware` from the wire instead of by calls inside the endpoints; `src/api/` contains no telemetry code (a test enforces it). The error handler stores the stable `error_code` on the request for the sidecar to read
+- **Metric semantics changed:** SSE close reasons are now `client_disconnect` / `server_closed` / `error` (the old `max_duration` / `slow_consumer` split is gone for SSE — slow consumers are counted by the new `app.events.subscriptions.dropped`); WebSocket reasons come from close codes (new: `server_busy`, `rejected`, `other`); `stream.messages.sent` now counts every frame including heartbeats; `webhook.received` now also records `error` (publish failures)
+- `provider` on `webhook.received` is only labelled for configured providers (unknown providers and wrong methods are not recorded) so URL probing cannot create unbounded series
+
+### Fixed
+- Postgres and in-memory event buses disconnected healthy subscribers when a burst exceeded their queue (a 64-slot queue received 47 of 2000 events); the pump now yields between chunks and the default queue is 256
+- Docs claimed "thousands of events/s" for the Postgres bus; measured 400–600 events/s
+
+### Added (shared streaming state)
+- `EVENT_BUS_BACKEND=postgres`: events table + `LISTEN/NOTIFY` bus, Postgres webhook idempotency store and WebSocket ticket replay store, so SSE, WebSocket, webhook de-duplication and ticket single-use work across containers. Publishers serialise on an advisory lock so event ids are in commit order; works through a transaction pooler (`EVENT_BUS_LISTEN_URL` adds instant delivery over a session connection, polling otherwise)
+- `TicketReplayStore` port with in-memory and Postgres adapters
+- Topic scopes: `webhooks:read` / `items:read` are required in addition to `events:read` to subscribe to a topic, and WebSocket tickets carry only read scopes; `event_access.can_view()` hook for per-event visibility
+- Rate limits: per user on `POST /ws/ticket`, per provider on webhooks, per connection on WebSocket messages (`429 RATE_LIMITED` / close `1008`)
+- Contract tests run every EventBus / webhook store / ticket store backend through the same behaviour, plus cross-container tests (ordering under concurrent publishers, LISTEN loss and recovery, pruning)
+- Route-label contract tests, a guard that the installed packages match the deploy pins, and `wait_until` in place of fixed sleeps in async tests
+
+### Changed (shared streaming state)
+- **Breaking:** subscribing to the `items` / `webhooks` streams now needs `items:read` / `webhooks:read` as well as `events:read`
+- FastAPI's native request telemetry is disabled by default (`FASTAPI_NATIVE_TELEMETRY=true` restores it): it duplicated every server span and emitted a second, differently-unit `http.server.request.duration`
+- `TelemetryMiddleware` resolves route labels through a function that can never fail a request
+- `.github/requirements/test.txt` pins the same versions as the deploy image
+- `statement_cache_size=0` is now verified against PgBouncer 1.20 and guarded by a test
+
+### Added (persistence)
+- Postgres persistence adapter (`PERSISTENCE_BACKEND=postgres`, `DATABASE_URL`) built for Supabase's transaction pooler: asyncpg pool opened in the app lifespan (never baked into a Modal snapshot), `statement_cache_size=0`, SSL required for remote hosts, idempotent schema bootstrap under an advisory lock (`src/adapters/persistence/sql/001_create_items.sql`)
+- Name uniqueness enforced by a unique index on `lower(btrim(name))`, closing the check-then-write race across containers; violations surface as `DuplicateItemNameError` (409)
+- `StorageUnavailableError` → `503 STORAGE_UNAVAILABLE` with `Retry-After` when the database is unreachable (health also reports unhealthy)
+- `EnvConfig.persistence_secret_name` to mount a Modal secret holding `DATABASE_URL`
+- Repository contract tests run against every backend; CI starts a Postgres service and sets `TEST_DATABASE_URL`
+
 ### Added (streaming)
 - Server-Sent Events (`GET /events/stream`), WebSocket (`POST /ws/ticket`, `WS /ws`) and signed webhook ingestion (`POST /webhooks/{provider}`, generic HMAC-SHA256 with timestamp tolerance and idempotency) — see `docs/api/streaming.md`
 - `EventBus` and `WebhookEventStore` ports with in-memory adapters; `ItemService` publishes `item.created` / `item.updated` / `item.deleted`
