@@ -20,12 +20,21 @@ PIP_PACKAGES: List[str] = [
     "websockets==17.2",
     "pydantic==2.14.1",
     "PyJWT==2.15.1",
+    "asyncpg==0.32.0",  # Postgres/Supabase persistence adapter
     # OpenTelemetry — OTLP/HTTP push to Grafana Cloud (or any OTLP-compatible backend)
     "opentelemetry-sdk==1.45.1",
     "opentelemetry-exporter-otlp-proto-http==1.45.1",
     "opentelemetry-semantic-conventions==0.66b1",
     # Injects otelTraceID/otelSpanID into every LogRecord for log-trace correlation
     "opentelemetry-instrumentation-logging==0.66b1",
+]
+
+# Never ship these into the image: a local .env holds real credentials (e.g. the
+# Supabase connection string). Secrets reach containers only via Modal Secrets.
+IMAGE_IGNORE: List[str] = [
+    ".git", ".github", ".venv", "venv", "**/__pycache__", ".pytest_cache",
+    "tests", "docs", "scripts",
+    ".env", ".env.*", "**/.env", "**/.env.*", "*.env",
 ]
 
 cpu_image = (
@@ -35,7 +44,7 @@ cpu_image = (
     .add_local_dir(
         ".",
         remote_path="/root",
-        ignore=[".git", ".github", ".venv", "venv", "**/__pycache__", ".pytest_cache", "tests", "docs", "scripts"],
+        ignore=IMAGE_IGNORE,
     )
 )
 
@@ -87,6 +96,11 @@ class EnvConfig:
     # Streams end themselves this many seconds before the hard timeout so
     # clients reconnect cleanly instead of being cut off.
     stream_timeout_margin_seconds: int = 30
+
+    # PERSISTENCE — name of a Modal secret holding PERSISTENCE_BACKEND=postgres and
+    # DATABASE_URL (the Supabase pooler URL). None keeps the in-memory backend.
+    # The secret must exist before you deploy; see docs/persistence.md.
+    persistence_secret_name: Optional[str] = None
 
     # MODAL RESOURCES
     secrets: list = field(default_factory=list)
@@ -194,7 +208,9 @@ def build_fastapi_config(env: EnvConfig) -> dict:
         "cpu": env.cpu_core_count,
         "memory": env.ram_memory_mib,
         "timeout": env.server_hard_timeout_seconds,
-        "secrets": env.secrets + [modal.Secret.from_dict({"MODAL_ENV": env.env_name})],
+        "secrets": env.secrets
+        + ([modal.Secret.from_name(env.persistence_secret_name)] if env.persistence_secret_name else [])
+        + [modal.Secret.from_dict({"MODAL_ENV": env.env_name})],
         "volumes": env.volumes,
         "min_containers": env.min_containers,
         "enable_memory_snapshot": True,
