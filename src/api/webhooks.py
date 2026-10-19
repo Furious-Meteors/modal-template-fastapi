@@ -30,7 +30,7 @@ import time
 
 from fastapi import APIRouter, Depends, Request, Response, status
 
-from src.adapters.telemetry import stream_metrics
+from src.api import ratelimit
 from src.api.errors import AppError, get_session_id
 from src.api.models import ErrorDetail, WebhookResponse
 from src.core.ports.event_bus import EventBus
@@ -60,11 +60,6 @@ def sign(secret: bytes, timestamp: str, body: bytes) -> str:
     return f"sha256={mac.hexdigest()}"
 
 
-def _reject(provider: str, outcome: str, status_code: int, code: str, message: str) -> AppError:
-    stream_metrics.webhook_outcome(provider, outcome)
-    return AppError(status_code, code, message)
-
-
 @router.post(
     "/webhooks/{provider}",
     response_model=WebhookResponse,
@@ -76,6 +71,7 @@ def _reject(provider: str, outcome: str, status_code: int, code: str, message: s
         400: {"model": ErrorDetail, "description": "Missing/stale timestamp, missing id, bad payload"},
         401: {"model": ErrorDetail, "description": "Missing or invalid signature"},
         404: {"model": ErrorDetail, "description": "Unknown provider"},
+        429: {"model": ErrorDetail, "description": "Rate limited (retry after the given delay)"},
         413: {"model": ErrorDetail, "description": "Body too large"},
     },
 )
@@ -93,42 +89,50 @@ async def receive_webhook(
         # as a metric label here, keeping cardinality bounded.
         raise AppError(404, "UNKNOWN_WEBHOOK_PROVIDER", "Unknown webhook provider")
 
+    # Per provider (never per IP): generous enough that real traffic never hits
+    # it, and providers retry a 429. Checked before any body is read.
+    wait = ratelimit.webhook_limiter.check(provider)
+    if wait:
+        raise AppError(
+            429, "RATE_LIMITED", "Too many webhook deliveries; retry shortly",
+            headers=ratelimit.TokenBucketLimiter.retry_after_header(wait),
+        )
+
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > WEBHOOK_MAX_BODY_BYTES:
-        raise _reject(provider, "too_large", 413, "PAYLOAD_TOO_LARGE", "Webhook body too large")
+        raise AppError(413, "PAYLOAD_TOO_LARGE", "Webhook body too large")
     body = await request.body()
     if len(body) > WEBHOOK_MAX_BODY_BYTES:
-        raise _reject(provider, "too_large", 413, "PAYLOAD_TOO_LARGE", "Webhook body too large")
+        raise AppError(413, "PAYLOAD_TOO_LARGE", "Webhook body too large")
 
     timestamp = request.headers.get("x-webhook-timestamp")
     if not timestamp:
-        raise _reject(provider, "bad_timestamp", 400, "MISSING_TIMESTAMP", "X-Webhook-Timestamp header required")
+        raise AppError(400, "MISSING_TIMESTAMP", "X-Webhook-Timestamp header required")
     try:
         sent_at = int(timestamp)
     except ValueError:
-        raise _reject(provider, "bad_timestamp", 400, "INVALID_TIMESTAMP", "X-Webhook-Timestamp must be unix seconds")
+        raise AppError(400, "INVALID_TIMESTAMP", "X-Webhook-Timestamp must be unix seconds")
     if abs(time.time() - sent_at) > WEBHOOK_TOLERANCE_SECONDS:
-        raise _reject(provider, "stale", 400, "STALE_TIMESTAMP", "Webhook timestamp outside the allowed window")
+        raise AppError(400, "STALE_TIMESTAMP", "Webhook timestamp outside the allowed window")
 
     provided = request.headers.get("x-webhook-signature")
     if not provided:
-        raise _reject(provider, "bad_signature", 401, "MISSING_SIGNATURE", "X-Webhook-Signature header required")
+        raise AppError(401, "MISSING_SIGNATURE", "X-Webhook-Signature header required")
     if not hmac.compare_digest(provided.encode(), sign(secret, timestamp, body).encode()):
-        raise _reject(provider, "bad_signature", 401, "INVALID_SIGNATURE", "Invalid webhook signature")
+        raise AppError(401, "INVALID_SIGNATURE", "Invalid webhook signature")
 
     # ── Authenticated from here on ───────────────────────────────────────
     webhook_id = request.headers.get("x-webhook-id", "")
     if not _WEBHOOK_ID_RE.match(webhook_id):
-        raise _reject(provider, "bad_request", 400, "MISSING_WEBHOOK_ID", "X-Webhook-Id header required (1-128 printable chars)")
+        raise AppError(400, "MISSING_WEBHOOK_ID", "X-Webhook-Id header required (1-128 printable chars)")
     try:
         payload = json.loads(body)
     except ValueError:
         payload = None
     if not isinstance(payload, dict):
-        raise _reject(provider, "bad_request", 400, "INVALID_PAYLOAD", "Body must be a JSON object")
+        raise AppError(400, "INVALID_PAYLOAD", "Body must be a JSON object")
 
     if not await store.record_if_new(provider, webhook_id):
-        stream_metrics.webhook_outcome(provider, "duplicate")
         response.status_code = status.HTTP_200_OK
         return WebhookResponse(
             session_id=session_id, status="duplicate", message="Webhook already received"
@@ -144,7 +148,6 @@ async def receive_webhook(
         # Let the provider retry: forget the id so the retry is not a "duplicate".
         await store.forget(provider, webhook_id)
         raise
-    stream_metrics.webhook_outcome(provider, "accepted")
     return WebhookResponse(
         session_id=session_id, status="accepted", message="Webhook accepted"
     )

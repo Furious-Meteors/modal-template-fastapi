@@ -10,8 +10,8 @@ from src.api.events import router as events_router
 from src.api.routes import router
 from src.api.webhooks import router as webhooks_router
 from src.adapters.http.middleware import TelemetryMiddleware
-from src.deps import init_dependencies
-from src.utils.config import APP_DESCRIPTION, APP_ENV, APP_VERSION, CORS_ORIGINS, SERVER_PREFIX, SERVICE_TITLE
+from src.deps import close_resources, init_dependencies, init_resources
+from src.utils.config import APP_DESCRIPTION, APP_ENV, FASTAPI_NATIVE_TELEMETRY, APP_VERSION, CORS_ORIGINS, SERVER_PREFIX, SERVICE_TITLE
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,12 +21,20 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Fail fast: a misconfigured container should not start serving.
     validate_auth_config()
-    init_dependencies()
+    await init_resources()
+    try:
+        init_dependencies()
+    except Exception:
+        await close_resources()
+        raise
     if "*" in CORS_ORIGINS and APP_ENV == "prod":
         logger.warning("CORS_ORIGINS='*' in prod: set EnvConfig.cors_origins to your real origins.")
     logger.info(f"Starting {SERVICE_TITLE}")
-    yield
-    logger.info(f"Shutting down {SERVICE_TITLE}")
+    try:
+        yield
+    finally:
+        logger.info(f"Shutting down {SERVICE_TITLE}")
+        await close_resources()
 
 
 app = FastAPI(
@@ -34,6 +42,9 @@ app = FastAPI(
     description=APP_DESCRIPTION,
     version=APP_VERSION,
     lifespan=lifespan,
+    # See FASTAPI_NATIVE_TELEMETRY in src/utils/config.py. `logs` is off as well:
+    # native logging records validation errors with the offending input values.
+    telemetry=None if FASTAPI_NATIVE_TELEMETRY else {"tracing": False, "metrics": False, "logs": False},
 )
 
 app.add_middleware(

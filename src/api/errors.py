@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from src.api.models import ErrorDetail, FieldError
-from src.core.domain.errors import DuplicateItemNameError
+from src.core.domain.errors import DuplicateItemNameError, StorageUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ _STATUS_CODES = {
     404: "NOT_FOUND",
     405: "METHOD_NOT_ALLOWED",
     409: "CONFLICT",
+    503: "SERVICE_UNAVAILABLE",
     422: "VALIDATION_ERROR",
     429: "TOO_MANY_REQUESTS",
 }
@@ -81,6 +82,9 @@ def _response(
     errors: Optional[list[FieldError]] = None,
     headers: Optional[dict[str, str]] = None,
 ) -> JSONResponse:
+    # Observability hint, read by the telemetry sidecar (TelemetryMiddleware) after
+    # the response is built. It is only a value on the request: no metric code here.
+    request.state.error_code = error_code
     body = ErrorDetail(
         detail=message,
         session_id=get_session_id(request),
@@ -132,6 +136,19 @@ async def _duplicate_item_name_handler(
     return _response(request, 409, "ITEM_NAME_EXISTS", str(exc))
 
 
+async def _storage_unavailable_handler(
+    request: Request, exc: StorageUnavailableError
+) -> JSONResponse:
+    # Deliberately generic: never echo driver or connection details to clients.
+    return _response(
+        request,
+        503,
+        "STORAGE_UNAVAILABLE",
+        "Storage is temporarily unavailable; retry shortly",
+        headers={"Retry-After": "5"},
+    )
+
+
 async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     # Runs in ServerErrorMiddleware, outside TelemetryMiddleware, so the
     # x-session-id header has to be set here. The exception is still re-raised
@@ -152,4 +169,5 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
     app.add_exception_handler(RequestValidationError, _validation_error_handler)
     app.add_exception_handler(DuplicateItemNameError, _duplicate_item_name_handler)
+    app.add_exception_handler(StorageUnavailableError, _storage_unavailable_handler)
     app.add_exception_handler(Exception, _unhandled_exception_handler)
