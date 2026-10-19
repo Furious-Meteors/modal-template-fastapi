@@ -83,3 +83,24 @@ def test_memory_event_bus_warns_in_prod(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="src.deps"):
         deps.init_dependencies()
     assert any("EVENT_BUS_BACKEND=memory" in r.getMessage() for r in caplog.records)
+
+
+# ── max_containers and the webhook secret ───────────────────────────────────
+
+def test_max_containers_is_validated_and_only_sent_to_modal_when_set():
+    import modal_common as mc
+
+    with pytest.raises(ValueError, match="max_containers"):
+        EnvConfig(env_name="dev", max_containers=0)
+    with pytest.raises(ValueError, match="max_containers"):
+        EnvConfig(env_name="dev", min_containers=2, max_containers=1)
+    assert "max_containers" not in mc.build_fastapi_config(EnvConfig(env_name="dev"))
+    assert mc.build_fastapi_config(EnvConfig(env_name="dev", max_containers=4))["max_containers"] == 4
+
+
+def test_the_webhook_secret_is_mounted_only_when_named():
+    import modal_common as mc
+
+    plain = len(mc.build_fastapi_config(EnvConfig(env_name="dev"))["secrets"])
+    with_hooks = len(mc.build_fastapi_config(EnvConfig(env_name="dev", webhook_secret_name="webhook-secrets"))["secrets"])
+    assert with_hooks == plain + 1
