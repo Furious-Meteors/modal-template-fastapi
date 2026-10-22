@@ -291,13 +291,13 @@ async def test_streaming_response_counts_bytes_and_returns_gauge_to_zero(monkeyp
     real = middleware._record
     monkeypatch.setattr(middleware, "_record", lambda *a: (recorded.append(a), real(*a))[1])
 
-    import asyncio
-
-    headers = {"Authorization": f"Bearer {make_token(scopes=['events:read'])}"}
+    headers = {"Authorization": f"Bearer {make_token(scopes=['events:read', 'items:read'])}"}
     stream = OpenStream(app, "/api/v1/events/stream", headers)
     await stream.read_until(b"retry")
     assert adds == [1]  # in flight while the stream is open
-    await asyncio.sleep(0.05)
+    from tests.asgi_helpers import wait_until
+
+    await wait_until(lambda: event_bus.subscriber_count("items") == 1)
     await event_bus.publish("items", "e", {"k": "v"})
     await stream.read_until(b'"k": "v"')
     await stream.disconnect()

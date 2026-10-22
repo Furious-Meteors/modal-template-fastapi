@@ -14,7 +14,6 @@ import logging
 import uuid
 from typing import List, Optional, Tuple
 
-from src.core.domain.errors import DuplicateItemNameError
 from src.core.domain.item import Item
 from src.core.ports.event_bus import EventBus
 from src.core.ports.item_repository import ItemRepository
@@ -38,9 +37,8 @@ class ItemService:
         except Exception:
             logger.exception("Failed to publish %s", event_type)
 
-    # The get_by_name pre-checks below give a friendly error but are not atomic.
-    # Repositories backed by a real database must enforce uniqueness themselves
-    # and raise DuplicateItemNameError; it propagates to the 409 handler as-is.
+    # Name uniqueness is enforced by the repository, which raises DuplicateItemNameError; it
+    # propagates to the 409 handler as-is. See src/core/ports/item_repository.py.
 
     async def create(
         self,
@@ -48,8 +46,8 @@ class ItemService:
         description: Optional[str] = None,
         project_id: Optional[str] = None,
     ) -> Item:
-        if await self._repo.get_by_name(name) is not None:
-            raise DuplicateItemNameError(name)
+        # Uniqueness is the repository's job (it raises DuplicateItemNameError): checking here first
+        # would cost an extra round trip and still leave a race the database has to close anyway.
         item = Item(
             id=str(uuid.uuid4()),
             name=name,
@@ -73,13 +71,8 @@ class ItemService:
         description: Optional[str] = None,
         project_id: Optional[str] = None,
     ) -> Optional[Item]:
-        existing = await self._repo.get(item_id)
-        if existing is None:
-            return None
-        # Keeping your own name is fine; taking another item's name is not.
-        clash = await self._repo.get_by_name(name)
-        if clash is not None and clash.id != item_id:
-            raise DuplicateItemNameError(name)
+        # One write: the repository returns None for a missing item and raises
+        # DuplicateItemNameError if the name belongs to a different item (keeping your own is fine).
         updated = Item(id=item_id, name=name, description=description, project_id=project_id)
         result = await self._repo.update(updated)
         if result is not None:

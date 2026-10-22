@@ -11,9 +11,13 @@ Adding a new persistence backend:
   2. Implement a class with these methods (no import of this file needed)
   3. Wire it in src/deps.py
 
-Name uniqueness: ItemService checks get_by_name() before create/update, which is
-not atomic. Real database adapters should also enforce it with a unique index
-(on the normalised name) and surface violations as DuplicateItemNameError.
+Name uniqueness: adapters MUST enforce it themselves, comparing names ignoring case and
+surrounding whitespace, and raise DuplicateItemNameError from create() and from update()
+when the name belongs to a DIFFERENT item (an item may keep its own name). A database does
+this with a unique index on the normalised name, which is also the only race-free way; the
+service no longer checks first, which saved a round trip per write. update() returns None
+for a missing item. get_by_name() remains for lookups. tests/test_item_repository_contract.py
+holds every adapter to this.
 """
 from __future__ import annotations
 

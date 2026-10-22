@@ -1,5 +1,6 @@
 import os
 import time
+import pytest_asyncio
 
 # Must be set before any src imports so auth._get_secret_key() resolves.
 os.environ.setdefault("JWT_SECRET", "test-secret-key-for-pytest-at-least-32-bytes")
@@ -8,14 +9,50 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
+from pathlib import Path
+
+from src.utils.dburl import describe_url, is_local, mask_url, url_problems
+from src.utils.envfile import load_env_file
+
+# ── Local Postgres/Supabase settings for the test suite ─────────────────────
+# .env (git-ignored) may hold TEST_* settings. ONLY test settings are read here:
+# loading the app's own DATABASE_URL / PERSISTENCE_BACKEND would make every
+# TestClient start connect to a real database. A real `export` always wins.
+ENV_FILE_PREFIXES = ("TEST_", "ALLOW_DESTRUCTIVE_DB_TESTS", "DB_POOL_")
+load_env_file(Path(__file__).resolve().parent.parent / ".env", include_prefixes=ENV_FILE_PREFIXES)
+
+
+def _guard_test_database() -> None:
+    """The Postgres tests DROP the app's tables: refuse to point them at a remote DB by accident."""
+    url = os.environ.get("TEST_DATABASE_URL")
+    if not url:
+        return
+    for name, role in (("TEST_DATABASE_URL", "pool"), ("TEST_LISTEN_DATABASE_URL", "listen")):
+        value = os.environ.get(name)
+        if not value:
+            continue
+        errors, _ = url_problems(value, role=role)
+        if errors:
+            pytest.exit(f"{name} ({mask_url(value)}) is not usable:\n  - " + "\n  - ".join(errors), returncode=2)
+    if not is_local(url) and os.environ.get("ALLOW_DESTRUCTIVE_DB_TESTS") != "yes":
+        pytest.exit(
+            f"Refusing to run: TEST_DATABASE_URL ({mask_url(url)}) is not localhost, and the Postgres tests DROP "
+            "AND RECREATE the items, events, webhook_events and ws_ticket_uses tables.\n"
+            "Use a dedicated, empty Supabase project, then confirm with ALLOW_DESTRUCTIVE_DB_TESTS=yes "
+            "(in .env or the environment). Run `python scripts/check_supabase.py` first.",
+            returncode=2,
+        )
+
+
+_guard_test_database()
+
 from src.main import app
 from src.api.auth import get_current_user
 from src.api.models import TokenPayload
-from src.deps import get_event_bus, get_item_service, get_webhook_store
-from src.adapters.events.memory import InMemoryEventBus, InMemoryWebhookStore
+from src.deps import get_event_bus, get_item_service, get_ticket_store, get_webhook_store
+from src.adapters.events.memory import InMemoryEventBus, InMemoryTicketStore, InMemoryWebhookStore
 from src.adapters.persistence.memory import InMemoryItemRepository
-from src.api import auth as auth_module
-from src.api import streaming
+from src.api import ratelimit, streaming
 from src.core.services.item_service import ItemService
 
 TEST_SECRET = "test-secret-key-for-pytest-at-least-32-bytes"
@@ -67,13 +104,22 @@ def webhook_store():
 
 
 @pytest.fixture(autouse=True)
+def ticket_store():
+    store = InMemoryTicketStore()
+    app.dependency_overrides[get_ticket_store] = lambda: store
+    yield store
+    app.dependency_overrides.pop(get_ticket_store, None)
+
+
+@pytest.fixture(autouse=True)
 def reset_stream_state():
-    """Fresh connection cap and ticket replay cache for every test."""
-    original = streaming.limiter
+    """Fresh connection cap and rate-limit buckets for every test."""
+    original = (streaming.limiter, ratelimit.ticket_limiter, ratelimit.webhook_limiter)
     streaming.limiter = streaming.StreamLimiter(50)
-    auth_module._used_ticket_ids.clear()
+    ratelimit.ticket_limiter = ratelimit._per_minute(10_000, burst=10_000)
+    ratelimit.webhook_limiter = ratelimit._per_minute(100_000, burst=100_000)
     yield streaming.limiter
-    streaming.limiter = original
+    streaming.limiter, ratelimit.ticket_limiter, ratelimit.webhook_limiter = original
 
 
 @pytest.fixture(autouse=True)
@@ -144,3 +190,57 @@ def auth_headers(valid_token: str) -> dict:
 @pytest.fixture
 def write_headers(write_token: str) -> dict:
     return {"Authorization": f"Bearer {write_token}"}
+
+
+# ── Postgres (optional) ─────────────────────────────────────────────────────
+# Set TEST_DATABASE_URL to a DISPOSABLE database to run the Postgres-backed
+# contract tests; tables are dropped and recreated for every test.
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
+requires_postgres = pytest.mark.skipif(not TEST_DATABASE_URL, reason="TEST_DATABASE_URL not set")
+
+
+def _listen_url():
+    """A SESSION-level URL for LISTEN tests: never the transaction pooler (port 6543)."""
+    explicit = os.environ.get("TEST_LISTEN_DATABASE_URL")
+    if explicit:
+        return explicit
+    if TEST_DATABASE_URL and describe_url(TEST_DATABASE_URL).kind != "transaction-pooler":
+        return TEST_DATABASE_URL
+    return None
+
+
+LISTEN_URL = _listen_url()
+requires_listen = pytest.mark.skipif(
+    not LISTEN_URL,
+    reason="needs a session-level connection: set TEST_LISTEN_DATABASE_URL "
+           "(Supabase: the session pooler or direct string, port 5432)",
+)
+BACKENDS = [
+    "memory",
+    pytest.param("postgres", marks=requires_postgres),
+]
+
+
+async def wipe_database(pool):
+    """Drop everything the app (and its migrations) create, including migration bookkeeping."""
+    await pool.execute(
+        "DROP TABLE IF EXISTS items, events, webhook_events, ws_ticket_uses, schema_migrations CASCADE; "
+        "DROP FUNCTION IF EXISTS publish_event(text, text, jsonb)"
+    )
+
+
+async def fresh_pg_pool():
+    """A pool on a clean, fully migrated schema. The caller closes it."""
+    from src.adapters.persistence.postgres import create_pool, ensure_schema
+
+    pool = await create_pool(TEST_DATABASE_URL)
+    await wipe_database(pool)
+    await ensure_schema(pool)
+    return pool
+
+
+@pytest_asyncio.fixture
+async def pg_pool():
+    pool = await fresh_pg_pool()
+    yield pool
+    await pool.close()

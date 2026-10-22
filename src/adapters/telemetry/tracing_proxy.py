@@ -34,7 +34,7 @@ Performance:
 """
 from __future__ import annotations
 
-import asyncio
+import inspect
 
 from src.infrastructure.setup import get_tracer
 
@@ -52,7 +52,7 @@ class TracingProxy:
     def __getattr__(self, name: str):
         method = getattr(object.__getattribute__(self, "_wrapped"), name)
 
-        if not asyncio.iscoroutinefunction(method):
+        if not inspect.iscoroutinefunction(method):
             return method
 
         prefix = object.__getattribute__(self, "_prefix")

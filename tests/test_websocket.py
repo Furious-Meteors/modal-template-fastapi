@@ -10,7 +10,10 @@ from src.api.models import TokenPayload
 from tests.conftest import TEST_SECRET, make_token
 
 WS = "/api/v1/ws"
-USER = TokenPayload(sub="u@example.com", exp=9_999_999_999, scopes=["events:read"])
+USER = TokenPayload(
+    sub="u@example.com", exp=9_999_999_999,
+    scopes=["events:read", "items:read", "webhooks:read", "items:write"],
+)
 
 
 def _ticket() -> str:

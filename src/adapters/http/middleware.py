@@ -17,6 +17,13 @@ Trace span
   • WebSocket connections get one span per connection ("WEBSOCKET /api/v1/ws");
     there is deliberately no per-message span.
 
+Stream and webhook metrics (see adapters/telemetry/stream_metrics.py)
+  Recorded here, from the wire, so the endpoints contain no telemetry code:
+  SSE is recognised by the response content-type, WebSocket by scope type; close
+  reasons come from close codes and disconnect messages; webhook outcomes from the
+  response status plus the stable error_code the error handler stores on the
+  request (request.state.error_code).
+
 Implemented as a pure ASGI middleware (not BaseHTTPMiddleware) so streaming
 responses (SSE) pass through unbuffered, client disconnects propagate to the
 endpoint, and WebSocket scopes are supported.
@@ -46,7 +53,7 @@ import logging
 import time
 import uuid
 
-from opentelemetry import propagate, trace
+from opentelemetry import propagate
 from opentelemetry.semconv.trace import SpanAttributes
 from opentelemetry.trace import SpanKind, StatusCode
 from starlette.datastructures import MutableHeaders
@@ -54,6 +61,7 @@ from starlette.requests import HTTPConnection
 from starlette.routing import Match
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from src.adapters.telemetry import stream_metrics
 from src.infrastructure.setup import get_meter, get_tracer
 from src.utils.config import SERVER_PREFIX
 
@@ -138,6 +146,20 @@ def _route_template(conn: HTTPConnection) -> str:
     return UNMATCHED_ROUTE
 
 
+def _safe_route(conn: HTTPConnection) -> str:
+    """
+    _route_template that can never fail a request. It leans on FastAPI/Starlette
+    scope internals, so if an upgrade changes their shape we degrade to the
+    "unmatched" label (tests/test_route_labels.py then fails loudly in CI)
+    instead of raising after the response has already been sent.
+    """
+    try:
+        return _route_template(conn)
+    except Exception:
+        logger.warning("Could not resolve route template; using %r", UNMATCHED_ROUTE, exc_info=True)
+        return UNMATCHED_ROUTE
+
+
 def _labels(method: str, route: str, status: int) -> dict[str, str]:
     return {
         "method":       method,
@@ -206,15 +228,33 @@ class TelemetryMiddleware:
         method = scope["method"]
         t_start = time.perf_counter()
         active_labels = {"method": method}  # the route is only known after handling
-        state = {"status": 500, "bytes": 0}
+        state = {"status": 500, "bytes": 0, "sse": False, "done": False, "client_gone": False, "errored": False}
+        streams = stream_metrics.get()
+
+        async def receive_wrapper() -> Message:
+            message = await receive()
+            # A disconnect that arrives after the final body chunk is just the
+            # client closing a response the server already finished.
+            if message["type"] == "http.disconnect" and not state["done"]:
+                state["client_gone"] = True
+            return message
 
         async def send_wrapper(message: Message) -> None:
             if message["type"] == "http.response.start":
                 state["status"] = message["status"]
                 # Always present on the response so callers can correlate by this header.
-                MutableHeaders(scope=message)["x-session-id"] = session_id
+                headers = MutableHeaders(scope=message)
+                headers["x-session-id"] = session_id
+                if message["status"] == 200 and headers.get("content-type", "").startswith("text/event-stream"):
+                    state["sse"] = True
+                    streams.stream_opened("sse")
             elif message["type"] == "http.response.body":
-                state["bytes"] += len(message.get("body", b""))
+                body = message.get("body", b"")
+                state["bytes"] += len(body)
+                if not message.get("more_body", False):
+                    state["done"] = True
+                if state["sse"] and body:
+                    streams.message_sent("sse")
             await send(message)
 
         _safe_add(instr["active_requests"], 1, active_labels)
@@ -230,9 +270,10 @@ class TelemetryMiddleware:
                 self._set_request_attributes(span, conn, method)
                 span.set_attribute("app.session_id", session_id)
                 try:
-                    await self.app(scope, receive, send_wrapper)
+                    await self.app(scope, receive_wrapper, send_wrapper)
                 except Exception as exc:
-                    route = _route_template(conn)
+                    state["errored"] = True
+                    route = _safe_route(conn)
                     span.update_name(f"{method} {route}")
                     span.set_attribute(SpanAttributes.HTTP_ROUTE, route)
                     span.record_exception(exc)
@@ -240,9 +281,10 @@ class TelemetryMiddleware:
                     # If the response had already started, the real status stands.
                     _record(instr, method, route, state["status"],
                             (time.perf_counter() - t_start) * 1000, state["bytes"])
+                    self._observe_webhook(scope, route, state["status"])
                     raise
 
-                route = _route_template(conn)
+                route = _safe_route(conn)
                 status = state["status"]
                 span.update_name(f"{method} {route}")
                 span.set_attribute(SpanAttributes.HTTP_ROUTE, route)
@@ -254,6 +296,7 @@ class TelemetryMiddleware:
 
                 duration_ms = (time.perf_counter() - t_start) * 1000
                 _record(instr, method, route, status, duration_ms, state["bytes"])
+                self._observe_webhook(scope, route, status)
 
                 ctx       = span.get_span_context()
                 trace_hex = format(ctx.trace_id, "032x") if ctx else ""
@@ -273,12 +316,34 @@ class TelemetryMiddleware:
         finally:
             # Runs on every exit path so the in-flight gauge can never leak.
             _safe_add(instr["active_requests"], -1, active_labels)
+            if state["sse"]:
+                # Order matters: a client that vanishes can also surface as a send error.
+                reason = (
+                    "client_disconnect" if state["client_gone"]
+                    else "error" if state["errored"]
+                    else "server_closed"
+                )
+                streams.stream_closed("sse", reason)
+
+    @staticmethod
+    def _observe_webhook(scope: Scope, route: str, status: int) -> None:
+        if not route.endswith("/webhooks/{provider}"):
+            return
+        try:
+            stream_metrics.observe_webhook(
+                scope.get("path_params", {}).get("provider"),
+                status,
+                scope.get("state", {}).get("error_code"),
+            )
+        except Exception:
+            logger.debug("webhook metric failed", exc_info=True)
 
     # ── WebSocket ─────────────────────────────────────────────────────
     async def _websocket(self, scope: Scope, receive: Receive, send: Send) -> None:
         tracer = get_tracer()
         conn, session_id = self._start(scope)
-        state: dict = {"close_code": None}
+        state: dict = {"close_code": None, "opened": False, "server_close_code": None, "errored": False}
+        streams = stream_metrics.get()
 
         async def receive_wrapper() -> Message:
             message = await receive()
@@ -287,8 +352,14 @@ class TelemetryMiddleware:
             return message
 
         async def send_wrapper(message: Message) -> None:
-            if message["type"] == "websocket.close":
-                state["close_code"] = message.get("code", 1000)
+            kind = message["type"]
+            if kind == "websocket.accept":
+                state["opened"] = True
+                streams.stream_opened("websocket")
+            elif kind == "websocket.send":
+                streams.message_sent("websocket")
+            elif kind == "websocket.close":
+                state["close_code"] = state["server_close_code"] = message.get("code", 1000)
             await send(message)
 
         parent_ctx = propagate.extract(conn.headers)
@@ -300,11 +371,19 @@ class TelemetryMiddleware:
             try:
                 await self.app(scope, receive_wrapper, send_wrapper)
             except Exception as exc:
+                state["errored"] = True
                 span.record_exception(exc)
                 span.set_status(StatusCode.ERROR, str(exc))
                 raise
             finally:
-                route = _route_template(conn)
+                if state["opened"]:
+                    streams.stream_closed(
+                        "websocket",
+                        stream_metrics.websocket_close_reason(
+                            server_close_code=state["server_close_code"], errored=state["errored"]
+                        ),
+                    )
+                route = _safe_route(conn)
                 span.update_name(f"WEBSOCKET {route}")
                 span.set_attribute(SpanAttributes.HTTP_ROUTE, route)
                 if state["close_code"] is not None:

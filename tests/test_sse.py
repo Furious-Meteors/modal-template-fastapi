@@ -4,13 +4,13 @@ import asyncio
 import pytest
 
 from src.main import app
-from tests.asgi_helpers import OpenStream
+from tests.asgi_helpers import OpenStream, wait_until
 from tests.conftest import make_token
 
 URL = "/api/v1/events/stream"
 
 
-def _auth(scopes=("events:read",)):
+def _auth(scopes=("events:read", "items:read", "webhooks:read")):
     return {"Authorization": f"Bearer {make_token(scopes=list(scopes))}"}
 
 
@@ -39,7 +39,7 @@ async def test_stream_headers_and_live_event_arrive_unbuffered(event_bus):
     assert "x-session-id" in stream.headers  # added by the telemetry middleware
 
     await stream.read_until(b"retry: 3000")
-    await asyncio.sleep(0.05)  # subscriber registered
+    await wait_until(lambda: event_bus.subscriber_count("items") == 1)
     await event_bus.publish("items", "item.created", {"id": "abc"})
     body = await stream.read_until(b'data: {"id": "abc"}')  # arrives while still open
     assert b"event: item.created" in body
@@ -62,7 +62,7 @@ async def test_last_event_id_replays_missed_events(event_bus):
 async def test_topics_are_separate(event_bus):
     stream = OpenStream(app, f"{URL}?topic=webhooks", _auth())
     await stream.read_until(b"retry")
-    await asyncio.sleep(0.05)
+    await wait_until(lambda: event_bus.subscriber_count("webhooks") == 1)
     await event_bus.publish("items", "item.created", {"x": 1})
     await event_bus.publish("webhooks", "webhook.acme", {"y": 2})
     body = await stream.read_until(b'"y": 2')
@@ -114,10 +114,10 @@ async def test_connection_cap_returns_503_and_slot_freed_on_disconnect(reset_str
 
 
 @pytest.mark.asyncio
-async def test_item_service_writes_reach_the_stream(fresh_item_service):
+async def test_item_service_writes_reach_the_stream(fresh_item_service, event_bus):
     stream = OpenStream(app, URL, _auth())
     await stream.read_until(b"retry")
-    await asyncio.sleep(0.05)
+    await wait_until(lambda: event_bus.subscriber_count("items") == 1)
     await fresh_item_service.create("From service")
     body = await stream.read_until(b"item.created")
     assert b"From service" in body

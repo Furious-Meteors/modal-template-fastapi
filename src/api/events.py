@@ -12,9 +12,10 @@ STREAM_MAX_DURATION_SECONDS so clients reconnect (SSE: Last-Event-ID; WebSocket:
 ?last_event_id=) well inside Modal's request timeout.
 
 WebSocket close codes:
-  1001 max duration reached (reconnect)   1009 client message too large
-  1013 server busy / slow consumer        4401 missing/invalid ticket
-  4403 ticket lacks events:read           4400 unknown topic
+  1001 max duration reached (reconnect)   1008 client sent messages too fast
+  1009 client message too large           1013 server busy / slow consumer
+  4400 unknown topic                      4401 missing/invalid/used ticket
+  4403 ticket lacks events:read or the topic's scope (see event_access.py)
 """
 from __future__ import annotations
 
@@ -24,18 +25,18 @@ import json
 import logging
 from typing import AsyncIterator, Literal, Optional
 
-from fastapi import APIRouter, Depends, Header, Query, Request, WebSocket
+from fastapi import APIRouter, Depends, Header, Query, WebSocket
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
-from src.adapters.telemetry import stream_metrics
-from src.api import streaming
+from src.api import event_access, ratelimit, streaming
 from src.api.auth import create_ws_ticket, require_scope, verify_ws_ticket
 from src.api.errors import AppError
 from src.api.models import ErrorDetail, TokenPayload, WsTicketResponse
 from src.core.domain.events import Event
 from src.core.ports.event_bus import EventBus
-from src.deps import get_event_bus
+from src.core.ports.ticket_store import TicketReplayStore
+from src.deps import get_event_bus, get_ticket_store
 from src.utils.config import (
     STREAM_HEARTBEAT_SECONDS,
     STREAM_MAX_DURATION_SECONDS,
@@ -57,12 +58,8 @@ def _sse_frame(event: Event) -> str:
 
 
 async def _sse_body(
-    bus: EventBus, topic: str, last_event_id: Optional[str], release
+    bus: EventBus, topic: str, last_event_id: Optional[str], user: TokenPayload, release
 ) -> AsyncIterator[str]:
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    reason = "client_disconnect"
-    stream_metrics.stream_opened("sse")
     try:
         yield "retry: 3000\n\n"  # EventSource reconnect delay
         async for item in streaming.with_heartbeat(
@@ -72,17 +69,10 @@ async def _sse_body(
         ):
             if item is None:
                 yield ": heartbeat\n\n"
-            else:
+            elif event_access.can_view(item, user):
                 yield _sse_frame(item)
-                stream_metrics.message_sent("sse")
-        reason = (
-            "max_duration"
-            if loop.time() - started >= STREAM_MAX_DURATION_SECONDS - 0.5
-            else "slow_consumer"
-        )
     finally:
         release()
-        stream_metrics.stream_closed("sse", reason)
 
 
 @router.get(
@@ -92,10 +82,12 @@ async def _sse_body(
     description=(
         "Long-lived `text/event-stream`. Send `Last-Event-ID` to resume after a "
         "reconnect (best-effort replay). The server ends the stream every "
-        f"{STREAM_MAX_DURATION_SECONDS}s; EventSource reconnects automatically."
+        f"{STREAM_MAX_DURATION_SECONDS}s; EventSource reconnects automatically. "
+        "Requires `events:read` plus the topic's scope (`items:read` / `webhooks:read`)."
     ),
     responses={
         200: {"content": {"text/event-stream": {}}, "description": "Event stream"},
+        403: {"model": ErrorDetail, "description": "Missing events:read or the topic's scope"},
         503: {"model": ErrorDetail, "description": "Connection limit reached"},
     },
 )
@@ -105,6 +97,7 @@ async def stream_events(
     bus: EventBus = Depends(get_event_bus),
     current_user: TokenPayload = Depends(require_scope("events:read")),
 ):
+    event_access.ensure_topic_access(topic, current_user)
     if not streaming.limiter.try_acquire():
         raise AppError(
             503,
@@ -121,7 +114,7 @@ async def stream_events(
             streaming.limiter.release()
 
     return StreamingResponse(
-        _sse_body(bus, topic, last_event_id, release),
+        _sse_body(bus, topic, last_event_id, current_user, release),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -143,12 +136,19 @@ async def stream_events(
     description=(
         "Browsers cannot send an Authorization header when opening a WebSocket. "
         "Exchange your Bearer JWT for a short-lived single-use ticket and connect "
-        "to `/ws?ticket=<ticket>`."
+        "to `/ws?ticket=<ticket>`. The ticket carries only your read scopes."
     ),
+    responses={429: {"model": ErrorDetail, "description": "Rate limited"}},
 )
 async def issue_ws_ticket(
     current_user: TokenPayload = Depends(require_scope("events:read")),
 ):
+    wait = ratelimit.ticket_limiter.check(current_user.sub)  # per user, never per IP
+    if wait:
+        raise AppError(
+            429, "RATE_LIMITED", "Too many ticket requests; slow down",
+            headers=ratelimit.TokenBucketLimiter.retry_after_header(wait),
+        )
     ticket, ttl = create_ws_ticket(current_user)
     return WsTicketResponse(ticket=ticket, expires_in=ttl)
 
@@ -164,6 +164,7 @@ async def _pump(
     bus: EventBus,
     topic: str,
     last_event_id: Optional[str],
+    user: TokenPayload,
 ) -> tuple[int, str]:
     """Push bus events to the client until the stream ends. Returns the close code."""
     loop = asyncio.get_running_loop()
@@ -173,6 +174,8 @@ async def _pump(
         STREAM_HEARTBEAT_SECONDS,
         STREAM_MAX_DURATION_SECONDS,
     ):
+        if item is not None and not event_access.can_view(item, user):
+            continue
         message = (
             {"type": "heartbeat"}
             if item is None
@@ -180,14 +183,16 @@ async def _pump(
         )
         async with send_lock:
             await websocket.send_text(json.dumps(message))
-        if item is not None:
-            stream_metrics.message_sent("websocket")
     if loop.time() - started >= STREAM_MAX_DURATION_SECONDS - 0.5:
         return 1001, "max duration reached; reconnect"
     return 1013, "slow consumer"
 
 
-async def _listen(websocket: WebSocket, send_lock: asyncio.Lock) -> Optional[tuple[int, str]]:
+async def _listen(
+    websocket: WebSocket,
+    send_lock: asyncio.Lock,
+    limiter: ratelimit.TokenBucketLimiter,
+) -> Optional[tuple[int, str]]:
     """
     Read client messages. Returns None when the client disconnects, or a
     (code, reason) when the server should close. Supported: {"type": "ping"}.
@@ -200,6 +205,8 @@ async def _listen(websocket: WebSocket, send_lock: asyncio.Lock) -> Optional[tup
         raw = text.encode() if text is not None else message.get("bytes") or b""
         if len(raw) > WS_MAX_MESSAGE_BYTES:
             return 1009, "message too large"
+        if limiter.check("connection"):
+            return 1008, "rate limit exceeded"
         reply: dict
         try:
             data = json.loads(raw)
@@ -220,6 +227,7 @@ async def stream_ws(
     topic: str = Query("items"),
     last_event_id: Optional[str] = Query(None),
     bus: EventBus = Depends(get_event_bus),
+    tickets: TicketReplayStore = Depends(get_ticket_store),
 ):
     # Accept first so the client receives a meaningful close code; closing
     # before accept would surface only as an opaque handshake failure.
@@ -230,29 +238,28 @@ async def stream_ws(
     if not ticket:
         return await _close(websocket, 4401, "ticket required")
     try:
-        user = verify_ws_ticket(ticket)
+        user, jti = verify_ws_ticket(ticket)
     except AppError:
         return await _close(websocket, 4401, "invalid ticket")
-    if "events:read" not in user.scopes:
-        return await _close(websocket, 4403, "missing scope events:read")
+    if "events:read" not in user.scopes or event_access.required_topic_scope(topic) not in user.scopes:
+        return await _close(websocket, 4403, "missing required scope")
+    if not await tickets.consume(jti, float(user.exp)):  # atomic: one winner, even across containers
+        return await _close(websocket, 4401, "ticket already used")
     if not streaming.limiter.try_acquire():
         return await _close(websocket, 1013, "too many open streams")
 
-    stream_metrics.stream_opened("websocket")
-    reason = "client_disconnect"
     send_lock = asyncio.Lock()
-    sender = asyncio.create_task(_pump(websocket, send_lock, bus, topic, last_event_id))
-    receiver = asyncio.create_task(_listen(websocket, send_lock))
+    sender = asyncio.create_task(_pump(websocket, send_lock, bus, topic, last_event_id, user))
+    receiver = asyncio.create_task(
+        _listen(websocket, send_lock, ratelimit.new_ws_message_limiter())
+    )
     try:
         await asyncio.wait({sender, receiver}, return_when=asyncio.FIRST_COMPLETED)
         close: Optional[tuple[int, str]] = None
         if sender.done() and not sender.cancelled() and sender.exception() is None:
             close = sender.result()
-            reason = "max_duration" if close[0] == 1001 else "slow_consumer"
         elif receiver.done() and not receiver.cancelled() and receiver.exception() is None:
             close = receiver.result()
-            if close is not None:
-                reason = "message_too_large"
         for task in (sender, receiver):
             task.cancel()
         # asyncio.wait, not gather: gather re-raises a cancelled child's
@@ -266,4 +273,3 @@ async def stream_ws(
             await _close(websocket, *close)
     finally:
         streaming.limiter.release()
-        stream_metrics.stream_closed("websocket", reason)

@@ -172,3 +172,19 @@ def test_get_session_id_falls_back_when_middleware_absent():
     with TestClient(_mini_app(with_middleware=False)) as c:
         r = c.get("/sid")
     assert r.json()["session_id"]
+
+
+def test_storage_unavailable_maps_to_503_with_retry_after(client, fresh_item_service):
+    from src.core.domain.errors import StorageUnavailableError
+
+    async def boom(*a, **k):
+        raise StorageUnavailableError("CannotConnectNowError")
+
+    fresh_item_service.list = boom
+    r = client.get("/api/v1/items")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["error_code"] == "STORAGE_UNAVAILABLE"
+    assert r.headers["retry-after"] == "5"
+    assert "CannotConnectNow" not in r.text  # driver details never reach clients
+    assert body["session_id"] == r.headers["x-session-id"]
