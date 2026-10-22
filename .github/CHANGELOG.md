@@ -11,6 +11,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added (schema migrations)
+- Versioned migrations (`src/adapters/persistence/migrations.py`): `NNN_name.sql` applied once in numeric order and recorded in `schema_migrations` with a sha256; `R__name.sql` repeatable scripts re-run every start. The whole batch runs in one transaction under an advisory lock (same key as before, so old and new containers serialise during a rolling deploy): concurrent starts apply each migration exactly once, and a failing migration rolls the batch back. Editing an applied migration is refused (drift); a database newer than the code is tolerated with a warning so rollbacks work; existing databases are adopted without touching their data
+- Previously the schema was re-run from `IF NOT EXISTS` scripts on every start, which could create tables but never change one
+- `AUTO_MIGRATE=false` makes containers verify instead of migrate (they refuse to start on a database that is behind); `scripts/migrate.py status [--check]` / `up` run migrations as a deploy step; `scripts/check_supabase.py` reports migration status
+- The security lockdown of `publish_event()` moved from `003` to the repeatable `R__publish_event_lockdown.sql`, so it is still re-asserted on every start
+- `MIGRATION_LOCK_TIMEOUT_SECONDS` (120) and `MIGRATION_STATEMENT_TIMEOUT_SECONDS` (300)
+
 ### Changed (database round trips)
 - Event publish is a single SQL function call (`publish_event()`, `sql/003_publish_event.sql`: lock + insert + NOTIFY) instead of a 5-statement transaction. The ordering lock is now held only while the database runs one statement, so the system-wide write ceiling no longer collapses with network distance: about 4,800 events/s next to the database (was 400–600) and 47–191/s at a 30 ms round trip (was ~6/s). The function is revoked from `PUBLIC`/`anon`/`authenticated`/`service_role` on every start, because Supabase would otherwise expose it through its REST API
 - `list` is one statement (`count(*) OVER ()`), not a 4-statement transaction; `create`/`update` no longer pre-check names. **Adapters must now enforce name uniqueness and raise `DuplicateItemNameError` themselves** (the in-memory adapter does; the service no longer checks first). A service write is the write plus one publish
