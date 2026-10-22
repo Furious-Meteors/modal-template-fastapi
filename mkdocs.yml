@@ -105,5 +105,6 @@ nav:
     - Streaming & Webhooks: api/streaming.md
   - Persistence: persistence.md
   - Testing: testing.md
+  - Smoke test: smoke-test.md
   - CI/CD: cicd.md
   - Deployment: deployment.md
