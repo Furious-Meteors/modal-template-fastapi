@@ -6,14 +6,12 @@
 > A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT auth with scopes, paginated CRUD, **Postgres/Supabase persistence with versioned migrations**, **SSE, WebSocket and signed-webhook streaming that works across containers**, a telemetry-sidecar pattern with OpenTelemetry and Grafana Cloud, a 629-test suite, and automated CI/CD. Measured, not guessed: see [Measured performance](#measured-performance).
 
 [![Python](https://img.shields.io/badge/Python-3.11-4f46e5?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Modal](https://img.shields.io/badge/Modal-Serverless-7c3aed?style=flat-square)](https://modal.com)
 [![Postgres](https://img.shields.io/badge/Postgres-Supabase-3ecf8e?style=flat-square&logo=supabase&logoColor=white)](#persistence--migrations)
 [![Tests](https://img.shields.io/badge/Tests-629%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
-[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-enabled-f5a800?style=flat-square&logo=opentelemetry&logoColor=white)](src/infrastructure/)
 [![Grafana](https://img.shields.io/badge/Grafana-Cloud-f46800?style=flat-square&logo=grafana&logoColor=white)](#observability)
-[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-4f46e5?style=flat-square&logo=materialformkdocs&logoColor=white)](https://furious-meteors.github.io/modal-template-fastapi/)
 [![License](https://img.shields.io/badge/License-MIT-6b7280?style=flat-square)](LICENSE)
+
 
 ## Introduction
 
