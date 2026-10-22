@@ -34,6 +34,29 @@ logger = logging.getLogger(__name__)
 _INITIALISED = False
 
 
+def _rejection_logging_session():
+    """
+    requests.Session that logs why the backend refused an export. The SDK only says
+    "Transient error Too Many Requests", which hides the gateway's reason (which limit,
+    how long to wait). Logs status, Retry-After and a short body; never request headers,
+    so the Authorization header cannot leak.
+    """
+    import requests
+
+    class _Session(requests.Session):
+        def send(self, request, **kwargs):
+            response = super().send(request, **kwargs)
+            if response.status_code >= 400:
+                logger.warning(
+                    "Telemetry export rejected: %s %s -> %s retry_after=%s body=%.300r",
+                    request.method, request.path_url, response.status_code,
+                    response.headers.get("Retry-After"), response.text,
+                )
+            return response
+
+    return _Session()
+
+
 def _instance_id() -> str:
     """
     A stable id for THIS container. Counters and histograms are cumulative per
@@ -102,6 +125,7 @@ def setup_telemetry() -> None:
     span_exporter = OTLPSpanExporter(
         endpoint=f"{endpoint}/v1/traces",
         headers=headers,
+        session=_rejection_logging_session(),
     )
     tracer_provider = TracerProvider(resource=resource)
     tracer_provider.add_span_processor(
@@ -118,6 +142,7 @@ def setup_telemetry() -> None:
     metric_exporter = OTLPMetricExporter(
         endpoint=f"{endpoint}/v1/metrics",
         headers=headers,
+        session=_rejection_logging_session(),
     )
     metric_reader = PeriodicExportingMetricReader(
         metric_exporter,
