@@ -127,20 +127,23 @@ def require_scope(*scopes: str):
 # client first trades its Bearer JWT for a short-lived, single-purpose ticket
 # and passes that in the query string. The ticket is a signed JWT with its own
 # audience, so it is useless as an API token (and API tokens are useless as
-# tickets). It is stateless — any container can verify it — and single-use is
-# enforced per container on a best-effort basis.
+# tickets). Verification is stateless — any container can do it. Single use is
+# enforced by the TicketReplayStore (src/core/ports/ticket_store.py): shared
+# across containers with EVENT_BUS_BACKEND=postgres, per container otherwise.
 
 WS_TICKET_AUDIENCE = "ws-ticket"
-_used_ticket_ids: dict[str, float] = {}
 
 
 def create_ws_ticket(user: TokenPayload) -> tuple[str, int]:
     """Mint a ticket for `user`. Returns (ticket, ttl_seconds)."""
+    from src.api.event_access import TICKET_SCOPES  # local: event_access imports this module's models
+
     now = int(time.time())
     claims: dict = {
         "sub": user.sub,
         "aud": WS_TICKET_AUDIENCE,
-        "scopes": ["events:read"],  # least privilege: a ticket only opens a stream
+        # Least privilege: only the scopes stream access can need, nothing that writes.
+        "scopes": sorted(s for s in user.scopes if s in TICKET_SCOPES),
         "iat": now,
         "exp": now + WS_TICKET_TTL_SECONDS,
         "jti": uuid.uuid4().hex,
@@ -152,8 +155,12 @@ def create_ws_ticket(user: TokenPayload) -> tuple[str, int]:
     return ticket, WS_TICKET_TTL_SECONDS
 
 
-def verify_ws_ticket(ticket: str) -> TokenPayload:
-    """Validate and consume a ticket. Raises AppError(401) on any failure."""
+def verify_ws_ticket(ticket: str) -> tuple[TokenPayload, str]:
+    """
+    Validate a ticket's signature, audience and expiry. Returns (claims, jti).
+    Raises AppError(401) on any failure. Does NOT consume the ticket — the caller
+    must consume the jti from the TicketReplayStore.
+    """
     kwargs: dict = {"audience": WS_TICKET_AUDIENCE}
     issuer = os.environ.get("JWT_ISSUER")
     if issuer:
@@ -166,17 +173,8 @@ def verify_ws_ticket(ticket: str) -> TokenPayload:
             options={"require": ["exp", "sub", "jti"]},
             **kwargs,
         )
-        payload = TokenPayload.model_validate(claims)
+        return TokenPayload.model_validate(claims), str(claims["jti"])
     except jwt.ExpiredSignatureError:
         raise _unauthorized("TICKET_EXPIRED", "Ticket has expired")
     except (jwt.InvalidTokenError, ValidationError):
         raise _unauthorized("INVALID_TICKET", "Invalid ticket")
-
-    now = time.time()
-    for jti in [j for j, exp in _used_ticket_ids.items() if exp <= now]:
-        del _used_ticket_ids[jti]
-    jti = claims["jti"]
-    if jti in _used_ticket_ids:
-        raise _unauthorized("INVALID_TICKET", "Ticket has already been used")
-    _used_ticket_ids[jti] = float(payload.exp)
-    return payload

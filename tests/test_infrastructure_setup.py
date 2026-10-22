@@ -332,3 +332,36 @@ def test_setup_telemetry_disabled_flag_skips_exporters_even_with_endpoint(monkey
     span_cls.assert_not_called()
     metric_cls.assert_not_called()
     assert setup_mod._INITIALISED is True
+
+
+def test_rejected_exports_are_logged_with_the_reason_but_never_the_credentials(caplog):
+    import http.server
+    import threading
+
+    from src.infrastructure.setup import _rejection_logging_session
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(429)
+            self.send_header("Retry-After", "6")
+            self.end_headers()
+            self.wfile.write(b"tenant exceeded the request rate limit (err-mimir-tenant-max-request-rate)")
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with caplog.at_level("WARNING", logger="src.infrastructure.setup"):
+            response = _rejection_logging_session().post(
+                f"http://127.0.0.1:{server.server_port}/otlp/v1/metrics",
+                headers={"Authorization": "Basic c2VjcmV0"},
+                data=b"x",
+            )
+    finally:
+        server.shutdown()
+    assert response.status_code == 429
+    text = caplog.text
+    assert "429" in text and "retry_after=6" in text and "err-mimir-tenant-max-request-rate" in text
+    assert "c2VjcmV0" not in text and "Authorization" not in text

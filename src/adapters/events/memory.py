@@ -29,7 +29,7 @@ class _Subscriber:
 
 
 class InMemoryEventBus:
-    def __init__(self, replay_size: int = 100, subscriber_queue_size: int = 64) -> None:
+    def __init__(self, replay_size: int = 100, subscriber_queue_size: int = 256) -> None:
         self._replay_size = replay_size
         self._queue_size = subscriber_queue_size
         self._seq = 0
@@ -50,6 +50,9 @@ class InMemoryEventBus:
                     sub.queue.get_nowait()
                 sub.queue.put_nowait(_CLOSE)
                 self._subscribers[topic].discard(sub)
+        # Let consumers run: a tight publish loop never suspends, so without this
+        # even a healthy subscriber would overflow its queue and be dropped.
+        await asyncio.sleep(0)
         return event
 
     async def subscribe(
@@ -70,6 +73,10 @@ class InMemoryEventBus:
                 yield item
         finally:
             self._subscribers.get(topic, set()).discard(sub)
+
+    def subscriber_count(self, topic: str) -> int:
+        """Live subscribers on a topic (lets tests wait for registration without sleeping)."""
+        return len(self._subscribers.get(topic, ()))
 
     def _replay_after(self, topic: str, last_event_id: Optional[str]) -> list[Event]:
         if last_event_id is None:
@@ -112,3 +119,20 @@ class InMemoryWebhookStore:
 
     async def forget(self, provider: str, webhook_id: str) -> None:
         self._seen.pop((provider, webhook_id), None)
+
+
+class InMemoryTicketStore:
+    """Per-process ticket replay protection (see src/core/ports/ticket_store.py)."""
+
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
+        self._used: Dict[str, float] = {}
+
+    async def consume(self, jti: str, expires_at: float) -> bool:
+        now = self._clock()
+        for old in [j for j, exp in self._used.items() if exp <= now]:
+            del self._used[old]
+        if jti in self._used:
+            return False
+        self._used[jti] = expires_at
+        return True
