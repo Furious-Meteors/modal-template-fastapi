@@ -76,9 +76,72 @@ multiplexes them, but keep an eye on your plan's client-connection limit.
   contract suite fails with `prepared statement "…" does not exist`; with the
   setting it passes. Modern PgBouncer (≥ 1.21) tolerates the cache, Supavisor
   and older versions do not.
-* The schema is applied from `src/adapters/persistence/sql/*.sql` at startup. Teams that manage
-  schema with the Supabase CLI can apply the same files with `supabase db push`
-  and the startup step becomes a no-op.
+* The schema is migrated from `src/adapters/persistence/sql/` at startup (see
+  [Schema migrations](#schema-migrations)). Teams that manage schema with the Supabase CLI can apply the
+  numbered files with `supabase db push`; the runner then finds nothing pending.
+
+## Schema migrations
+
+The schema is versioned. Files in `src/adapters/persistence/sql/`:
+
+| File | Kind | Behaviour |
+|---|---|---|
+| `NNN_name.sql` | versioned | applied **once**, in numeric order, then recorded in `schema_migrations` with a sha256 |
+| `R__name.sql` | repeatable | re-run on **every** start, after the versioned ones — must be idempotent (grants, revokes, views) |
+
+To change the schema, **add the next numbered file** — never edit an applied one. Its checksum is
+stored, so an edited file makes startup refuse to continue (other databases already ran the old
+text); restore it and put the change in a new migration. There are no "down" scripts: undo a
+change with a new migration.
+
+```sql
+-- sql/004_add_priority.sql
+ALTER TABLE items ADD COLUMN priority integer NOT NULL DEFAULT 0;
+```
+
+How it behaves:
+
+* **Atomic.** One transaction per start, under an advisory lock. Containers starting together
+  serialise (the first migrates, the rest find nothing pending); a failing migration — or a
+  failing repeatable — rolls back the whole batch and is retried on the next start.
+* **Existing databases are adopted.** A database built by the earlier "re-run every file"
+  scheme has the tables but no history. `001`–`003` are idempotent, so the first run re-executes
+  them (changing and losing nothing) and records them.
+* **Rolling deploys.** Old containers keep running against the migrated schema, so make migrations
+  backward compatible: add and backfill first, drop only what no running code reads.
+* **Rollbacks.** A database *newer* than the code (a rolled-back deploy) is tolerated with a
+  warning; rolling back is never blocked by a migration the old code doesn't know.
+* **Limits.** Everything runs in a transaction, so no `CREATE INDEX CONCURRENTLY` (run those by
+  hand). `MIGRATION_LOCK_TIMEOUT_SECONDS` (120) bounds waiting for another instance or a table
+  lock; `MIGRATION_STATEMENT_TIMEOUT_SECONDS` (300) bounds one migration.
+
+**Migrate as a deploy step instead of at boot** (recommended once more than one person deploys):
+
+```bash
+python scripts/migrate.py status --check   # exit 1 if anything is pending or edited: a CI gate
+python scripts/migrate.py up               # apply; run before deploying the new version
+# and on the app:  AUTO_MIGRATE=false      # containers only VERIFY at boot and refuse a database that is behind
+```
+
+### Why migrations live in the repository, not on a Modal Volume
+
+A migration is **code**: it has to match the exact app version that runs it. They are baked into
+the image with the app, so every container carries precisely the migrations for its own version,
+and they get code review, history, CI (the suite runs the shipped migrations on a real Postgres)
+and rollback-by-redeploy for free. A Volume would break each of those:
+
+* **Version skew.** The schema and the code that expects it would be deployed separately, so a
+  container can start with migrations that are newer or older than it is.
+* **No review or history.** Files on a Volume have no diff, blame, CI or approval — a stray edit
+  becomes production DDL.
+* **Weak semantics for this.** Modal Volumes have no distributed file locking, concurrent writers
+  are last-write-wins, and changes are only visible to other containers after a commit and an
+  explicit reload ([Modal Volumes guide](https://modal.com/docs/guide/volumes)). The runner would
+  also gain a start-up dependency on the Volume mounting correctly.
+
+If you want migrations *decoupled from app deploys*, the answer is the deploy-step pattern above
+(`scripts/migrate.py up` from CI, with `AUTO_MIGRATE=false`) or Supabase's own tooling reading the
+same `.sql` files — not a separate store for the files.
 
 ## Preparing `dev` and `prod`
 
