@@ -232,3 +232,22 @@ def test_each_container_has_its_own_metric_identity(monkeypatch):
     assert _build_resource().attributes["service.instance.id"] == "ta-ABC123"
     monkeypatch.delenv("MODAL_TASK_ID")
     assert _instance_id()  # falls back to the hostname, never empty
+
+
+# ── region pairing ──────────────────────────────────────────────────────────
+
+def test_containers_are_pinned_to_the_database_region_by_default():
+    import modal_common as mc
+
+    assert EnvConfig(env_name="dev").region == "us-east"
+    for cfg in (mc.FEAT, mc.DEV, mc.PROD):
+        assert mc.build_fastapi_config(cfg)["region"] == "us-east", cfg.env_name
+
+
+def test_region_can_be_changed_or_left_to_modal_but_not_blank():
+    import modal_common as mc
+
+    assert mc.build_fastapi_config(EnvConfig(env_name="dev", region="eu-west"))["region"] == "eu-west"
+    assert "region" not in mc.build_fastapi_config(EnvConfig(env_name="dev", region=None))
+    with pytest.raises(ValueError, match="region"):
+        EnvConfig(env_name="dev", region="  ")

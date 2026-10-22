@@ -92,6 +92,12 @@ class EnvConfig:
     # Supabase plan's pooler client limit. None = Modal's default (unbounded scale-out).
     max_containers: Optional[int] = None
     max_concurrent_requests: int = 5
+    # Where containers run. Pin it to the region your database is in: every query is a network
+    # round trip (a distant region measured 673 ms for `select 1`, us-east -> us-east-2 about
+    # 37 ms). "us-east" covers AWS us-east-1/us-east-2, so it pairs with a Supabase project in
+    # us-east-1 or us-east-2. None = let Modal place containers anywhere (not recommended
+    # with a database). Modal may charge a premium for pinned regions.
+    region: Optional[str] = "us-east"
 
     # STREAMING — each open SSE/WebSocket connection holds one concurrent-request
     # slot for its whole life. Cap them below max_concurrent_requests so streams
@@ -135,6 +141,8 @@ class EnvConfig:
     metric_export_interval_seconds: int = 60
 
     def __post_init__(self) -> None:
+        if self.region is not None and not self.region.strip():
+            raise ValueError("region must be a Modal region such as 'us-east', or None")
         if self.max_containers is not None and self.max_containers < 1:
             raise ValueError(f"max_containers must be >= 1 or None (got {self.max_containers})")
         if self.max_containers is not None and self.max_containers < self.min_containers:
@@ -275,6 +283,8 @@ def build_fastapi_config(env: EnvConfig) -> dict:
 
     if env.max_containers is not None:
         config["max_containers"] = env.max_containers
+    if env.region:
+        config["region"] = env.region
     if env.gpu_type:
         config["gpu"] = env.gpu_type
 
