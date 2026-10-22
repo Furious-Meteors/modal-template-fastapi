@@ -17,7 +17,9 @@ async def pool():
     from src.adapters.persistence.postgres import create_pool, ensure_schema
 
     p = await create_pool(TEST_DATABASE_URL)
-    await p.execute("DROP TABLE IF EXISTS items")
+    from tests.conftest import wipe_database
+
+    await wipe_database(p)
     await ensure_schema(p)
     yield p
     await p.close()

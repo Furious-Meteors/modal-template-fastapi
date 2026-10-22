@@ -221,12 +221,20 @@ BACKENDS = [
 ]
 
 
+async def wipe_database(pool):
+    """Drop everything the app (and its migrations) create, including migration bookkeeping."""
+    await pool.execute(
+        "DROP TABLE IF EXISTS items, events, webhook_events, ws_ticket_uses, schema_migrations CASCADE; "
+        "DROP FUNCTION IF EXISTS publish_event(text, text, jsonb)"
+    )
+
+
 async def fresh_pg_pool():
-    """A pool on a clean schema. The caller closes it."""
+    """A pool on a clean, fully migrated schema. The caller closes it."""
     from src.adapters.persistence.postgres import create_pool, ensure_schema
 
     pool = await create_pool(TEST_DATABASE_URL)
-    await pool.execute("DROP TABLE IF EXISTS items, events, webhook_events, ws_ticket_uses")
+    await wipe_database(pool)
     await ensure_schema(pool)
     return pool
 

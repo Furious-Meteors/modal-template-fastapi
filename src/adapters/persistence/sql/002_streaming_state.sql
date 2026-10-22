@@ -1,6 +1,6 @@
 -- Shared streaming state, so SSE/WebSocket streams, webhook de-duplication and
 -- WebSocket ticket replay protection work across containers.
--- Applied idempotently at startup together with 001 (see postgres.ensure_schema).
+-- Applied once by the migration runner (src/adapters/persistence/migrations.py), in numeric order.
 
 -- Event log. seq is assigned under an advisory lock in PostgresEventBus.publish,
 -- so seq order == commit order and a reader's "seq > cursor" can never skip a

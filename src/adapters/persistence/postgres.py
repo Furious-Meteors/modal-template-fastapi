@@ -32,7 +32,6 @@ import asyncio
 import functools
 import logging
 import os
-from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -43,8 +42,6 @@ from src.core.domain.item import Item
 
 logger = logging.getLogger(__name__)
 
-_MIGRATIONS_DIR = Path(__file__).resolve().parent / "sql"
-_SCHEMA_LOCK_KEY = 7_340_001  # arbitrary constant: serialises concurrent startups
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 
 
@@ -89,12 +86,10 @@ async def create_pool(dsn: str) -> asyncpg.Pool:
 
 
 async def ensure_schema(pool: asyncpg.Pool) -> None:
-    """Apply sql/*.sql idempotently; an advisory lock serialises containers."""
-    sql = "\n".join(p.read_text() for p in sorted(_MIGRATIONS_DIR.glob("*.sql")))
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute("SELECT pg_advisory_xact_lock($1)", _SCHEMA_LOCK_KEY)
-            await conn.execute(sql)
+    """Bring the schema up to date (versioned migrations; see migrations.py). Idempotent and concurrency-safe."""
+    from src.adapters.persistence.migrations import run_migrations
+
+    await run_migrations(pool)
 
 
 # Connection-level failures: the database is unreachable, restarting, or out of

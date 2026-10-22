@@ -8,7 +8,9 @@ import pytest_asyncio
 from tests.conftest import LISTEN_URL, TEST_DATABASE_URL, fresh_pg_pool, requires_listen, requires_postgres
 
 ROOT = Path(__file__).resolve().parent.parent
-SQL = (ROOT / "src" / "adapters" / "persistence" / "sql" / "003_publish_event.sql").read_text()
+SQL_DIR = ROOT / "src" / "adapters" / "persistence" / "sql"
+SQL = (SQL_DIR / "003_publish_event.sql").read_text()
+LOCKDOWN = (SQL_DIR / "R__publish_event_lockdown.sql").read_text()
 SIGNATURE = "publish_event(text, text, jsonb)"
 
 
@@ -20,10 +22,12 @@ def test_the_sql_lock_key_matches_the_python_constant():
 
 
 def test_the_function_is_locked_down_for_the_rest_api_roles():
-    assert "REVOKE ALL ON FUNCTION publish_event(text, text, jsonb) FROM PUBLIC" in SQL
+    assert "REVOKE ALL ON FUNCTION publish_event(text, text, jsonb) FROM PUBLIC" in LOCKDOWN
     for role in ("anon", "authenticated", "service_role"):
-        assert f"'{role}'" in SQL
+        assert f"'{role}'" in LOCKDOWN
     assert "SET search_path" in SQL  # no search_path hijacking
+    # the lockdown is repeatable (re-asserted every start), not a one-off in the versioned file
+    assert "REVOKE" not in SQL
 
 
 @pytest_asyncio.fixture

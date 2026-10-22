@@ -89,11 +89,12 @@ async def init_resources() -> None:
     bus_backend = _event_bus_backend()
     _validate_event_bus_backend(bus_backend)
     if _needs_pool(backend, bus_backend) and _pool is None:
-        from src.adapters.persistence.postgres import create_pool, ensure_schema
+        from src.adapters.persistence.migrations import migrate_on_startup
+        from src.adapters.persistence.postgres import create_pool
 
         _pool = await create_pool(os.environ["DATABASE_URL"])
         try:
-            await ensure_schema(_pool)
+            await migrate_on_startup(_pool)  # migrates, or verifies when AUTO_MIGRATE=false
         except Exception:
             await close_resources()
             raise

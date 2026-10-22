@@ -61,6 +61,20 @@ async def check_pool(url: str) -> bool:
         for table in existing:
             n = await pool.fetchval(f'SELECT count(*) FROM "{table}"')
             say("info", f"table {table}: {n} row(s)")
+        try:  # read-only: never creates schema_migrations
+            from src.adapters.persistence.migrations import status as migration_status
+
+            rows = [r for r in await migration_status(pool) if r["state"] != "repeatable"]
+            counts = {s: sum(r["state"] == s for r in rows) for s in ("applied", "pending", "changed", "unknown")}
+            if counts["changed"]:
+                say("FAIL", f"{counts['changed']} applied migration file(s) were edited afterwards: python scripts/migrate.py status")
+            elif counts["applied"] == 0 and existing:
+                say("info", "existing tables but no migration history: the first start adopts them (re-runs the idempotent scripts, changes nothing)")
+            else:
+                say("ok", f"schema migrations: {counts['applied']} applied, {counts['pending']} pending"
+                          + (f", {counts['unknown']} newer than this code" if counts["unknown"] else ""))
+        except Exception as exc:
+            say("info", f"could not read migration status ({type(exc).__name__})")
         return True
     finally:
         await pool.close()

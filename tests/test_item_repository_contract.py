@@ -44,7 +44,9 @@ async def repo(request):
     )
 
     pool = await create_pool(TEST_DATABASE_URL)
-    await pool.execute("DROP TABLE IF EXISTS items")
+    from tests.conftest import wipe_database
+
+    await wipe_database(pool)
     await ensure_schema(pool)
     try:
         yield PostgresItemRepository(pool)
