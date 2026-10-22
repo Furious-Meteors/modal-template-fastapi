@@ -80,6 +80,29 @@ multiplexes them, but keep an eye on your plan's client-connection limit.
   schema with the Supabase CLI can apply the same files with `supabase db push`
   and the startup step becomes a no-op.
 
+## Preparing `dev` and `prod`
+
+Every preset (`feat`, `dev`, `prod`) mounts the same two secrets, so environments differ
+only in sizing and credentials. Modal secrets are per environment: create them in each
+one **before** deploying it (`modal deploy` fails if a mounted secret is missing):
+
+```bash
+python scripts/push_modal_secret.py --environment prod                       # database settings
+python scripts/push_modal_secret.py --environment prod --name webhook-secrets --keys WEBHOOK_SECRET_ACME
+```
+
+Use a separate Supabase project (or at least separate credentials) per environment.
+
+**`prod` refuses to start on in-memory storage.** In-memory state is per container and
+lost on scale-down, so with `PERSISTENCE_BACKEND` or `EVENT_BUS_BACKEND` left at `memory`
+the container exits at boot with a message saying how to fix it, instead of quietly losing
+data. To knowingly accept that (a demo, say), set `ALLOW_MEMORY_IN_PROD=true`; `dev` and
+`feat` may use memory freely.
+
+Container caps bound database connections (containers × (pool of 5 + 1 LISTEN)): 3 on
+`feat` and `dev`, 5 on `prod` (30 pooler clients) — check your Supabase plan's limit before
+raising them.
+
 ## Deploy to Modal with Supabase
 
 The Supabase settings reach containers through a Modal secret, never through the
@@ -110,11 +133,29 @@ preset in `modal_common.py` (set on `feat`; add it to `dev`/`prod` when ready).
 Also make sure `fastapi-auth-secrets` holds a `JWT_SECRET` of at least 32 characters:
 the app now refuses to start with a shorter one.
 
-Capacity: every container opens up to `DB_POOL_MAX_SIZE` (default 5, matching the
+Webhook provider secrets (`WEBHOOK_SECRET_<PROVIDER>`) go in their own Modal secret,
+mounted via `EnvConfig.webhook_secret_name` (set on `feat` as `webhook-secrets`):
+`python scripts/push_modal_secret.py --environment feat --name webhook-secrets --keys WEBHOOK_SECRET_ACME`.
+Without it every `POST /webhooks/<provider>` answers 404.
+
+Capacity: set `EnvConfig.max_containers` (3 on `feat`); every container opens up to `DB_POOL_MAX_SIZE` (default 5, matching the
 per-container concurrency) connections to the pooler plus one `LISTEN` connection.
 Check `containers × (pool + 1)` against your Supabase plan's pooler client limit.
-Put the Supabase project in the same region as your Modal containers: every query
-and every event publish is a network round trip.
+**Put the Supabase project in the same region as your Modal containers.** Every query
+and every event publish is a network round trip, and region matters more than anything
+else here. Measured on the same code (server-side request times from the app's own logs):
+Modal `us-east` → Supabase Seoul vs → Supabase `us-east-2` (Ohio):
+
+| Request | Seoul | Ohio | |
+|---|---|---|---|
+| list items | 1245 ms | 147 ms | 8.5× |
+| create item | 2083 ms | 323 ms | 6.4× |
+| health (a DB read) | 940 ms | 258 ms | 3.6× |
+
+Supabase cannot move an existing project between regions; create a new one in the
+right region and point the Modal secret at it (`push_modal_secret.py --replace`).
+Modal's default region is `us-east`; you can also pin compute with `region=` (priced
+at a multiplier — see Modal's region-selection docs).
 
 ## Run and test locally against Supabase
 

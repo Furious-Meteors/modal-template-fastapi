@@ -11,6 +11,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed (prod and dev configuration, metrics)
+- **Breaking for `prod`:** it now refuses to start with in-memory persistence or event bus unless `ALLOW_MEMORY_IN_PROD=true` (was a warning). Deploy it only after creating `supabase-db` in the Modal environment `prod`
+- `dev` and `prod` presets mount `supabase-db` and `webhook-secrets` like `feat` (create them per environment first) and cap containers (`dev` 3, `prod` 5) to bound database connections
+- Metrics carry a per-container `service.instance.id` (`MODAL_TASK_ID`): previously every container pushed the same series, so cumulative counters overwrote each other in Grafana
+- `EnvConfig.metric_export_interval_seconds` (default 60, was 15): fewer requests per container. This does **not** remove Grafana Cloud's occasional `429 Too Many Requests` on OTLP metric batches: a 17-minute soak with 3 containers at 60 s still saw 8 retries and 2 failed batches (~1 export in 5 retried), and a probe with no app running saw some too, while a later probe saw none — it is intermittent and gateway-side. Counters and histograms are cumulative, so a failed batch loses one data point, not data. If it matters, check Grafana Cloud's usage/limits for the stack or ask Grafana support
+- The OpenTelemetry startup log line reports each container's instance id and export interval
+
+### Added (live verification on Modal `feat`)
+- `EnvConfig.max_containers` (sent to Modal; validated; 3 on `feat`) and `webhook_secret_name` (mounts a Modal secret with `WEBHOOK_SECRET_<PROVIDER>`); `push_modal_secret.py` can push any keys with `--name`/`--keys` (secret-looking values are shown as `<hidden, N characters>`)
+- `EnvConfig.stream_heartbeat_seconds` (default 5, exported as `STREAM_HEARTBEAT_SECONDS`): behind Modal's proxy the app learns of a client disconnect only when a heartbeat write fails, so a closed stream held its cap slot for ~10 s with the 15 s heartbeat and reconnecting clients got 503; with 5 s a freed slot is reusable in under a second
+- Measured: moving Supabase from Seoul to `us-east-2` (next to Modal `us-east`) cut server-side request times 3.6–8.5× (docs/persistence.md)
+
 ### Added (Modal + Supabase)
 - `scripts/push_modal_secret.py`: creates the `supabase-db` Modal secret from `.env` via the SDK (values never in argv or output), validates the connection strings first, refuses to overwrite without `--replace`, `--dry-run` shows key names only
 - The `feat` preset mounts `supabase-db` (`persistence_secret_name`); `dev` and `prod` are unchanged. A real push requires an explicit `--environment` (secrets are per Modal environment and the default is often prod)

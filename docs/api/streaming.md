@@ -68,6 +68,12 @@ data: {"id": "…", "name": "Widget", "description": null, "project_id": null}
   sends `Last-Event-ID`.
 * A client too slow to keep up is disconnected rather than buffered without
   bound; it reconnects and resumes.
+* **Behind Modal's proxy the app is not told when a client disconnects** — it finds out
+  when its next heartbeat write fails. A closed stream therefore holds its connection-cap
+  slot for up to one heartbeat (`STREAM_HEARTBEAT_SECONDS`; Modal deployments use 5 s,
+  measured live: ~10 s with the old 15 s setting, ~0.7 s after the change). A client that
+  reconnects immediately may get `503` with `Retry-After: 5`; it should wait and retry,
+  which `EventSource` does by itself.
 
 ```js
 const es = new EventSource(url); // browsers cannot set headers — see note

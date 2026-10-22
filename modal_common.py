@@ -100,6 +100,11 @@ class EnvConfig:
     # Streams end themselves this many seconds before the hard timeout so
     # clients reconnect cleanly instead of being cut off.
     stream_timeout_margin_seconds: int = 30
+    # Behind Modal's proxy the app is NOT told when a client disconnects: it only finds out
+    # when the next heartbeat write fails. Until then the dead stream keeps its slot, and a
+    # reconnecting browser gets 503 (measured live: slots stayed taken ~10s with a 15s
+    # heartbeat). So this is also the worst-case time a closed stream holds its slot.
+    stream_heartbeat_seconds: int = 5
 
     # PERSISTENCE — name of a Modal secret holding PERSISTENCE_BACKEND=postgres and
     # DATABASE_URL (the Supabase pooler URL). None keeps the in-memory backend.
@@ -121,6 +126,13 @@ class EnvConfig:
     telemetry_enabled: bool = True       # False = no OTLP export and no grafana-otlp secret mounted
     otel_endpoint: Optional[str] = None  # Grafana Cloud OTLP base URL
     service_name:  Optional[str] = None  # defaults to app_name when None
+    # How often each container pushes metrics. Every container pushes on its own, so the
+    # request rate to the backend is containers / interval. 60s keeps that low. NOTE this does
+    # not make Grafana Cloud's OTLP gateway stop answering the occasional 429: it did so at
+    # 60s too (about 1 export in 5 over a 17-minute soak with 3 containers, and from a single
+    # probe with no app running), so the SDK's retry is what absorbs them. Counters and
+    # histograms are cumulative, so a rejected batch costs one data point, never data.
+    metric_export_interval_seconds: int = 60
 
     def __post_init__(self) -> None:
         if self.max_containers is not None and self.max_containers < 1:
@@ -133,6 +145,10 @@ class EnvConfig:
                 f"max_concurrent_requests ({self.max_concurrent_requests}), "
                 f"otherwise open streams can starve regular requests"
             )
+        if not 5 <= self.metric_export_interval_seconds <= 600:
+            raise ValueError(f"metric_export_interval_seconds must be 5-600 (got {self.metric_export_interval_seconds})")
+        if not 1 <= self.stream_heartbeat_seconds <= 30:
+            raise ValueError(f"stream_heartbeat_seconds must be 1-30 (got {self.stream_heartbeat_seconds})")
         if self.server_hard_timeout_seconds - self.stream_timeout_margin_seconds < 10:
             raise ValueError(
                 "server_hard_timeout_seconds must exceed stream_timeout_margin_seconds by at least 10"
@@ -149,9 +165,9 @@ FEAT = EnvConfig(
     # Provider secrets for webhooks: python scripts/push_modal_secret.py --environment feat \
     #     --name webhook-secrets --keys WEBHOOK_SECRET_ACME
     webhook_secret_name="webhook-secrets",
-    # Pinned to ONE container while the stream cap and rate limits are verified live (both are
-    # per container, so scale-out hides them). Raise it afterwards.
-    max_containers=1,
+    # Bounds database connections: 3 containers x (pool of 5 + 1 LISTEN) = 18 pooler clients.
+    # (Set to 1 temporarily to verify the per-container stream cap and rate limits live.)
+    max_containers=3,
     cors_origins=["*"],
     otel_endpoint=None,  # endpoint comes from GRAFANA_OTLP_ENDPOINT inside the grafana-otlp secret
     secrets=[
@@ -169,6 +185,13 @@ DEV = EnvConfig(
     secrets=[
         modal.Secret.from_name("fastapi-auth-secrets"),
     ],
+    # Same persistence and webhook secrets as every environment. Create them in the Modal
+    # environment "dev" BEFORE deploying (modal deploy fails if a secret is missing):
+    #   python scripts/push_modal_secret.py --environment dev
+    #   python scripts/push_modal_secret.py --environment dev --name webhook-secrets --keys WEBHOOK_SECRET_<PROVIDER>
+    persistence_secret_name="supabase-db",
+    webhook_secret_name="webhook-secrets",
+    max_containers=3,  # bounds database connections: 3 x (pool of 5 + 1 LISTEN)
 )
 
 PROD = EnvConfig(
@@ -181,6 +204,15 @@ PROD = EnvConfig(
         modal.Secret.from_name("fastapi-auth-secrets"),
         modal.Secret.from_name("grafana-otlp"),
     ],
+    # Create these in the Modal environment "prod" BEFORE deploying; prod REFUSES to start on
+    # in-memory storage (see deps.init_dependencies), so a missing database config is loud.
+    #   python scripts/push_modal_secret.py --environment prod
+    #   python scripts/push_modal_secret.py --environment prod --name webhook-secrets --keys WEBHOOK_SECRET_<PROVIDER>
+    persistence_secret_name="supabase-db",
+    webhook_secret_name="webhook-secrets",
+    # Bounds database connections: containers x (pool of 5 + 1 LISTEN) must stay under your
+    # Supabase plan's pooler client limit. 5 x 6 = 30 — check your plan, then raise deliberately.
+    max_containers=5,
 )
 
 ENV_CONFIGS = {
@@ -218,6 +250,8 @@ def configure_env_vars(env: EnvConfig) -> None:
     os.environ.setdefault("CORS_ORIGINS", ",".join(env.cors_origins))
     # Streaming limits — read by src/utils/config.py
     os.environ.setdefault("STREAM_MAX_CONNECTIONS", str(env.max_streams))
+    os.environ.setdefault("STREAM_HEARTBEAT_SECONDS", str(env.stream_heartbeat_seconds))
+    os.environ.setdefault("OTEL_METRIC_EXPORT_INTERVAL_MS", str(env.metric_export_interval_seconds * 1000))
     os.environ.setdefault(
         "STREAM_MAX_DURATION_SECONDS",
         str(env.server_hard_timeout_seconds - env.stream_timeout_margin_seconds),

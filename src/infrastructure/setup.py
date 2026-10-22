@@ -16,6 +16,8 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import socket
+import uuid
 from functools import lru_cache
 
 from opentelemetry import metrics, trace
@@ -32,10 +34,21 @@ logger = logging.getLogger(__name__)
 _INITIALISED = False
 
 
+def _instance_id() -> str:
+    """
+    A stable id for THIS container. Counters and histograms are cumulative per
+    process, so two containers pushing the same series would overwrite each other
+    in the backend and look like constant counter resets. Grafana turns this into
+    the `instance` label.
+    """
+    return os.environ.get("MODAL_TASK_ID") or socket.gethostname() or uuid.uuid4().hex
+
+
 def _build_resource() -> Resource:
     return Resource.create({
         "service.name":            os.environ.get("OTEL_SERVICE_NAME", "modal-fastapi"),
         "service.version":         os.environ.get("OTEL_SERVICE_VERSION", "1.0.0"),
+        "service.instance.id":     _instance_id(),
         "deployment.environment":  os.environ.get("MODAL_ENV", "dev"),
     })
 
@@ -127,10 +140,12 @@ def setup_telemetry() -> None:
 
     _INITIALISED = True
     logger.info(
-        "OpenTelemetry initialised → %s  service=%s  env=%s",
+        "OpenTelemetry initialised → %s  service=%s  env=%s  instance=%s  metric_interval=%ss",
         endpoint,
         os.environ.get("OTEL_SERVICE_NAME", "modal-fastapi"),
         os.environ.get("MODAL_ENV", "dev"),
+        _instance_id(),
+        int(os.environ.get("OTEL_METRIC_EXPORT_INTERVAL_MS", "15000")) // 1000,
     )
 
 

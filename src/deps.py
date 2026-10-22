@@ -239,6 +239,25 @@ def _get_ticket_store():
     return InMemoryTicketStore()
 
 
+def _refuse_memory_in_prod(persistence: str, event_bus: str) -> None:
+    """
+    In-memory storage is per container and lost on scale-down. In prod that silently
+    loses data, so refuse to start — loudly, at boot — unless someone explicitly accepts it.
+    """
+    if os.environ.get("MODAL_ENV") != "prod":
+        return
+    if os.environ.get("ALLOW_MEMORY_IN_PROD", "").strip().lower() == "true":
+        return
+    memory = [f"{name}=memory" for name, value in (("PERSISTENCE_BACKEND", persistence), ("EVENT_BUS_BACKEND", event_bus)) if value == "memory"]
+    if memory:
+        raise RuntimeError(
+            f"Refusing to start in prod with in-memory storage ({', '.join(memory)}): data would be "
+            "per container and lost on scale-down. Configure Postgres (PERSISTENCE_BACKEND=postgres, "
+            "EVENT_BUS_BACKEND=postgres, DATABASE_URL — see docs/persistence.md), or set "
+            "ALLOW_MEMORY_IN_PROD=true to accept the data loss."
+        )
+
+
 def init_dependencies() -> None:
     """
     Eagerly build and validate everything the request path needs.
@@ -247,6 +266,7 @@ def init_dependencies() -> None:
     env var stops the container at startup instead of 500-ing the first request.
     """
     backend = os.environ.get("PERSISTENCE_BACKEND", "memory")
+    _refuse_memory_in_prod(backend, _event_bus_backend())
     _get_repository()
     _get_event_bus()
     _get_webhook_store()
