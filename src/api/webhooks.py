@@ -12,7 +12,7 @@ The secret for provider "acme" is the env var WEBHOOK_SECRET_ACME (set it in a
 Modal secret). Order of checks — nothing is parsed or stored until the
 signature verifies, so unauthenticated callers cannot burn idempotency storage:
 
-    known provider → body size → timestamp fresh → signature → webhook id →
+    known provider → body size (enforced while reading) → timestamp fresh → signature → webhook id →
     JSON object body → duplicate? → publish → 202
 
 The handler only validates and publishes to the "webhooks" topic, then returns
@@ -60,6 +60,18 @@ def sign(secret: bytes, timestamp: str, body: bytes) -> str:
     return f"sha256={mac.hexdigest()}"
 
 
+async def _read_limited(request: Request, limit: int) -> bytes | None:
+    """The request body, or None as soon as it exceeds `limit` bytes. Memory is bounded by limit + one chunk."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post(
     "/webhooks/{provider}",
     response_model=WebhookResponse,
@@ -101,8 +113,10 @@ async def receive_webhook(
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > WEBHOOK_MAX_BODY_BYTES:
         raise AppError(413, "PAYLOAD_TOO_LARGE", "Webhook body too large")
-    body = await request.body()
-    if len(body) > WEBHOOK_MAX_BODY_BYTES:
+    # Content-Length can be absent (chunked upload) or a lie, so the limit is enforced while
+    # reading: we stop at the first chunk that crosses it instead of buffering the whole body.
+    body = await _read_limited(request, WEBHOOK_MAX_BODY_BYTES)
+    if body is None:
         raise AppError(413, "PAYLOAD_TOO_LARGE", "Webhook body too large")
 
     timestamp = request.headers.get("x-webhook-timestamp")

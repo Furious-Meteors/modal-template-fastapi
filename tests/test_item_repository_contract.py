@@ -169,3 +169,54 @@ async def test_concurrent_renames_to_same_name_yield_exactly_one_winner(repo):
     )
     assert sum(isinstance(r, Item) for r in results) == 1
     assert sum(isinstance(r, DuplicateItemNameError) for r in results) == 7
+
+
+# ── Uniqueness is the REPOSITORY's job (the service no longer pre-checks) ───
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("probe", ["Widget", "  widget ", "WIDGET"])
+async def test_create_rejects_a_duplicate_name_itself(repo, probe):
+    await repo.create(_item(1, "Widget"))
+    with pytest.raises(DuplicateItemNameError):
+        await repo.create(_item(2, probe))
+    assert (await repo.list(limit=10, offset=0))[1] == 1  # the rejected create stored nothing
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_taking_another_items_name_but_allows_keeping_its_own(repo):
+    await repo.create(_item(1, "Alpha"))
+    await repo.create(_item(2, "Beta"))
+    with pytest.raises(DuplicateItemNameError):
+        await repo.update(Item(id="id-2", name=" alpha "))
+    assert (await repo.get("id-2")).name == "Beta"                       # a rejected update changed nothing
+    assert (await repo.update(Item(id="id-1", name="Alpha", description="new"))).description == "new"
+    assert (await repo.update(Item(id="id-1", name="ALPHA"))).name == "ALPHA"  # re-casing your own name is fine
+
+
+@pytest.mark.asyncio
+async def test_updating_a_missing_item_returns_none_even_if_the_name_is_taken(repo):
+    await repo.create(_item(1, "Taken"))
+    assert await repo.update(Item(id="ghost", name="Taken")) is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_direct_creates_of_one_name_have_exactly_one_winner(repo):
+    results = await asyncio.gather(*(repo.create(_item(i, "Same")) for i in range(12)), return_exceptions=True)
+    assert sum(isinstance(r, Item) for r in results) == 1
+    assert sum(isinstance(r, DuplicateItemNameError) for r in results) == 11
+
+
+@pytest.mark.asyncio
+async def test_a_page_past_the_end_still_reports_the_true_total(repo):
+    for i in range(5):
+        await repo.create(_item(i))
+    page, total = await repo.list(limit=10, offset=50)
+    assert page == [] and total == 5
+    page, total = await repo.list(limit=2, offset=4)
+    assert [x.id for x in page] == ["id-4"] and total == 5
+
+
+@pytest.mark.asyncio
+async def test_an_empty_repository_lists_cleanly(repo):
+    assert await repo.list(limit=10, offset=0) == ([], 0)
+    assert await repo.list(limit=10, offset=7) == ([], 0)

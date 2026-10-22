@@ -156,17 +156,20 @@ class PostgresItemRepository:
 
     @_translating
     async def list(self, limit: int = 100, offset: int = 0) -> Tuple[List[Item], int]:
-        async with self._pool.acquire() as conn:
-            # One snapshot for both queries so total and page agree.
-            async with conn.transaction(isolation="repeatable_read", readonly=True):
-                total = await conn.fetchval("SELECT count(*) FROM items")
-                rows = await conn.fetch(
-                    "SELECT id, name, description, project_id FROM items "
-                    "ORDER BY seq LIMIT $1 OFFSET $2",
-                    limit,
-                    offset,
-                )
-        return [_to_item(r) for r in rows], total
+        # One statement, so the page and the total come from the same snapshot with no
+        # transaction (BEGIN/COMMIT would be two more round trips).
+        rows = await self._pool.fetch(
+            "SELECT id, name, description, project_id, count(*) OVER () AS total FROM items "
+            "ORDER BY seq LIMIT $1 OFFSET $2",
+            limit,
+            offset,
+        )
+        if rows:
+            return [_to_item(r) for r in rows], rows[0]["total"]
+        if offset == 0:
+            return [], 0  # nothing at all
+        # A page past the end carries no rows to read the total from: ask for it.
+        return [], await self._pool.fetchval("SELECT count(*) FROM items")
 
     @_translating
     async def create(self, item: Item) -> Item:

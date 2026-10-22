@@ -165,3 +165,65 @@ def test_publish_failure_lets_provider_retry(client, event_bus, monkeypatch):
     monkeypatch.undo()
     monkeypatch.setenv("WEBHOOK_SECRET_ACME", SECRET)
     assert _post(client).status_code == 202  # not treated as a duplicate
+
+
+# ── the body limit holds for chunked uploads, which carry no Content-Length ──
+
+async def _post_chunked(chunks, *, headers=None, limit=None, monkeypatch=None):
+    """Drive the ASGI app with a scripted chunked body; report the status and how many chunks were read."""
+    from src.main import app
+
+    consumed = 0
+    pending = list(chunks)
+    sent = []
+
+    async def receive():
+        nonlocal consumed
+        if pending:
+            consumed += 1
+            piece = pending.pop(0)
+            return {"type": "http.request", "body": piece, "more_body": bool(pending)}
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST", "scheme": "http",
+        "path": "/api/v1/webhooks/acme", "raw_path": b"/api/v1/webhooks/acme", "query_string": b"", "root_path": "",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()],  # note: no content-length
+        "client": ("127.0.0.1", 1), "server": ("testserver", 80),
+    }
+    await app(scope, receive, send)
+    status = next(m["status"] for m in sent if m["type"] == "http.response.start")
+    return status, consumed
+
+
+@pytest.mark.asyncio
+async def test_a_chunked_upload_past_the_limit_is_cut_off_without_reading_the_rest(monkeypatch):
+    monkeypatch.setattr("src.api.webhooks.WEBHOOK_MAX_BODY_BYTES", 1000)
+    chunks = [b"x" * 400] * 500  # 200 kB offered, 1 kB allowed
+    status, consumed = await _post_chunked(chunks, headers=_headers(b"{}"))
+    assert status == 413
+    assert consumed <= 4, f"read {consumed} chunks of 500: the limit was not enforced while reading"
+
+
+@pytest.mark.asyncio
+async def test_a_chunked_upload_within_the_limit_still_works(monkeypatch):
+    body = json.dumps({"event": "ping", "pad": "y" * 3000}).encode()
+    pieces = [body[i:i + 700] for i in range(0, len(body), 700)]
+    assert len(pieces) > 3
+    status, consumed = await _post_chunked(pieces, headers=_headers(body))
+    assert status == 202 and consumed == len(pieces)
+
+
+@pytest.mark.asyncio
+async def test_a_chunked_body_exactly_at_the_limit_is_accepted_and_one_byte_over_is_not(monkeypatch):
+    base = json.dumps({"p": ""}).encode()
+    limit = 600
+    monkeypatch.setattr("src.api.webhooks.WEBHOOK_MAX_BODY_BYTES", limit)
+    exact = json.dumps({"p": "z" * (limit - len(base))}).encode()
+    assert len(exact) == limit
+    assert (await _post_chunked([exact[:300], exact[300:]], headers=_headers(exact)))[0] == 202
+    over = exact + b" "
+    assert (await _post_chunked([over[:300], over[300:]], headers=_headers(over)))[0] == 413

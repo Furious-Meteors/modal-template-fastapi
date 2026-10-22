@@ -13,11 +13,12 @@ publish() inserts a row and NOTIFYs inside one transaction. Each container runs
 a single background pump that reads rows with seq > cursor and fans them out to
 that container's local subscribers (in-process queues, like the in-memory bus).
 
-* Ordering: publishers take a transaction-level advisory lock before inserting,
-  so seq order equals commit order. A reader's "seq > cursor" therefore never
-  skips a row that commits late. Publishing is serialised by this lock: measured
-  at roughly 400-600 events/s on a laptop with local Postgres — ample for
-  notifications and activity feeds, not for high-volume streams.
+* Ordering: publish_event() (one SQL statement, see sql/003_publish_event.sql) takes a
+  transaction-level advisory lock before inserting, so seq order equals commit order. A reader's "seq > cursor" therefore never
+  skips a row that commits late. Publishing is serialised by this lock, which is
+  held across the publish transaction (~5 round trips), so the system-wide ceiling is
+  about 1 / (5 x round-trip time): ~400-600 events/s with the database next to the app,
+  ~6 events/s at a 30 ms round trip. Keep the database in the app's region.
 * Latency: with EVENT_BUS_LISTEN_URL set, a dedicated LISTEN connection wakes the
   pump immediately. Without it the pump polls every EVENT_BUS_POLL_MS.
   LISTEN needs a *session*-level connection: Supabase's transaction pooler
@@ -44,7 +45,7 @@ from src.core.domain.events import Event
 
 logger = logging.getLogger(__name__)
 
-_PUBLISH_LOCK_KEY = 7_340_002  # serialises publishers so seq order == commit order
+_PUBLISH_LOCK_KEY = 7_340_002  # serialises publishers so seq order == commit order; must match sql/003_publish_event.sql
 _CHANNEL = "events"
 _PROBE_CHANNEL = "events_probe"
 _PROBE_RETRY_SECONDS = 30
@@ -130,16 +131,14 @@ class PostgresEventBus:
     # ── publish / subscribe ────────────────────────────────────────────────
     @_translating
     async def publish(self, topic: str, event_type: str, data: Dict[str, Any]) -> Event:
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("SELECT pg_advisory_xact_lock($1)", _PUBLISH_LOCK_KEY)
-                row = await conn.fetchrow(
-                    f"INSERT INTO events (topic, type, data) VALUES ($1, $2, $3::jsonb) "
-                    f"RETURNING {_COLUMNS}",
-                    topic, event_type, json.dumps(data),
-                )
-                await conn.execute("SELECT pg_notify($1, $2)", _CHANNEL, str(row["seq"]))
-        return _to_event(row)
+        # One statement: the publish_event() SQL function takes the ordering lock, inserts and
+        # NOTIFYs (see sql/003_publish_event.sql), so a publish is a single database round trip
+        # and the lock is held only while the database runs it, not across the network.
+        row = await self._pool.fetchrow(
+            "SELECT out_seq, out_type, out_data, out_ts FROM publish_event($1, $2, $3::jsonb)",
+            topic, event_type, json.dumps(data),
+        )
+        return Event(id=str(row["out_seq"]), type=row["out_type"], data=json.loads(row["out_data"]), ts=row["out_ts"])
 
     async def subscribe(
         self, topic: str, last_event_id: Optional[str] = None

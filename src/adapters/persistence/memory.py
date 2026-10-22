@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
+from src.core.domain.errors import DuplicateItemNameError
 from src.core.domain.item import Item
 
 
@@ -39,13 +40,26 @@ class InMemoryItemRepository:
         total = len(all_items)
         return all_items[offset: offset + limit], total
 
+    def _name_taken(self, name: str, *, by_other_than: Optional[str] = None) -> bool:
+        wanted = name.strip().casefold()
+        return any(
+            i.id != by_other_than and i.name.strip().casefold() == wanted
+            for i in self._store.values()
+        )
+
     async def create(self, item: Item) -> Item:
+        # The port requires adapters to enforce name uniqueness (a database does it with a unique
+        # index). No awaits between the check and the write, so this is atomic on one event loop.
+        if self._name_taken(item.name):
+            raise DuplicateItemNameError(item.name)
         self._store[item.id] = item
         return item
 
     async def update(self, item: Item) -> Optional[Item]:
         if item.id not in self._store:
             return None
+        if self._name_taken(item.name, by_other_than=item.id):  # keeping your own name is fine
+            raise DuplicateItemNameError(item.name)
         self._store[item.id] = item
         return item
 
