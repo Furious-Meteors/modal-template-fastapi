@@ -20,6 +20,15 @@ CORS_ORIGINS    = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(
 
 SERVICE_TITLE = f"{APP_NAME}-{APP_ENV}"
 
+# FastAPI >= 0.143 emits its own request spans and metrics. TelemetryMiddleware
+# already records those (plus session IDs, route templates and WebSocket close
+# codes), so the native ones would double every server span and put a second,
+# differently-unit "http.server.request.duration" next to ours. Off by default;
+# set FASTAPI_NATIVE_TELEMETRY=true to restore FastAPI's own (it then also adds
+# fastapi.dependencies/endpoint/serialization child spans — but you get two
+# server spans per request, so consider disabling TelemetryMiddleware's export).
+FASTAPI_NATIVE_TELEMETRY = os.environ.get("FASTAPI_NATIVE_TELEMETRY", "").strip().lower() == "true"
+
 
 # ── Streaming (SSE / WebSocket) and webhooks ────────────────────────────────
 def _positive_int(name: str, default: int) -> int:
@@ -46,3 +55,21 @@ WS_MAX_MESSAGE_BYTES = _positive_int("WS_MAX_MESSAGE_BYTES", 4096)
 WS_TICKET_TTL_SECONDS = _positive_int("WS_TICKET_TTL_SECONDS", 30)
 WEBHOOK_TOLERANCE_SECONDS = _positive_int("WEBHOOK_TOLERANCE_SECONDS", 300)
 WEBHOOK_MAX_BODY_BYTES = _positive_int("WEBHOOK_MAX_BODY_BYTES", 1_048_576)
+
+# ── Shared streaming state (EVENT_BUS_BACKEND=postgres) ─────────────────────
+EVENT_BUS_POLL_MS = _positive_int("EVENT_BUS_POLL_MS", 1000)        # fallback poll / no-LISTEN latency
+EVENT_RETENTION_SECONDS = _positive_int("EVENT_RETENTION_SECONDS", 3600)
+EVENT_REPLAY_SIZE = _positive_int("EVENT_REPLAY_SIZE", 100)
+WEBHOOK_IDEMPOTENCY_TTL_SECONDS = _positive_int("WEBHOOK_IDEMPOTENCY_TTL_SECONDS", 86_400)
+
+# ── Rate limits (per container, in-memory token buckets) ────────────────────
+# Keys are chosen so a shared proxy IP can never lock out legitimate callers:
+# the ticket limit is per authenticated user, the webhook limit per provider
+# (generous — providers retry on 429), the message limit per connection.
+RATE_TICKET_PER_MINUTE = _positive_int("RATE_TICKET_PER_MINUTE", 30)
+RATE_WEBHOOK_PER_MINUTE = _positive_int("RATE_WEBHOOK_PER_MINUTE", 1200)
+RATE_WS_MESSAGES_PER_SECOND = _positive_int("RATE_WS_MESSAGES_PER_SECOND", 10)
+
+# ── Schema migrations (src/adapters/persistence/migrations.py) ──────────────
+MIGRATION_LOCK_TIMEOUT_SECONDS = _positive_int("MIGRATION_LOCK_TIMEOUT_SECONDS", 120)
+MIGRATION_STATEMENT_TIMEOUT_SECONDS = _positive_int("MIGRATION_STATEMENT_TIMEOUT_SECONDS", 300)

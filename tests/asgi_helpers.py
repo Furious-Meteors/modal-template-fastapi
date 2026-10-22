@@ -6,8 +6,21 @@ for open-ended streams such as SSE.
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlsplit
+
+
+async def wait_until(predicate: Callable[[], bool], timeout: float = 5.0, interval: float = 0.005) -> None:
+    """
+    Poll until `predicate()` is true. Use instead of a fixed sleep: it returns as
+    soon as the condition holds and tolerates a slow CI runner up to `timeout`.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError(f"condition not met within {timeout}s")
+        await asyncio.sleep(interval)
 
 
 class OpenStream:

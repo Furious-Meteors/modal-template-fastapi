@@ -58,6 +58,7 @@ def test_startup_fails_with_short_jwt_secret(monkeypatch):
 def test_memory_backend_in_prod_logs_warning(monkeypatch, caplog):
     monkeypatch.setenv("PERSISTENCE_BACKEND", "memory")
     monkeypatch.setenv("MODAL_ENV", "prod")
+    monkeypatch.setenv("ALLOW_MEMORY_IN_PROD", "true")  # explicit opt-in: warns instead of refusing
     with caplog.at_level(logging.WARNING, logger="src.deps"):
         deps.init_dependencies()
     assert any("memory in prod" in r.message for r in caplog.records)

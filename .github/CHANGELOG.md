@@ -11,6 +11,80 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added (schema migrations)
+- Versioned migrations (`src/adapters/persistence/migrations.py`): `NNN_name.sql` applied once in numeric order and recorded in `schema_migrations` with a sha256; `R__name.sql` repeatable scripts re-run every start. The whole batch runs in one transaction under an advisory lock (same key as before, so old and new containers serialise during a rolling deploy): concurrent starts apply each migration exactly once, and a failing migration rolls the batch back. Editing an applied migration is refused (drift); a database newer than the code is tolerated with a warning so rollbacks work; existing databases are adopted without touching their data
+- Previously the schema was re-run from `IF NOT EXISTS` scripts on every start, which could create tables but never change one
+- `AUTO_MIGRATE=false` makes containers verify instead of migrate (they refuse to start on a database that is behind); `scripts/migrate.py status [--check]` / `up` run migrations as a deploy step; `scripts/check_supabase.py` reports migration status
+- The security lockdown of `publish_event()` moved from `003` to the repeatable `R__publish_event_lockdown.sql`, so it is still re-asserted on every start
+- `MIGRATION_LOCK_TIMEOUT_SECONDS` (120) and `MIGRATION_STATEMENT_TIMEOUT_SECONDS` (300)
+
+### Changed (database round trips)
+- Event publish is a single SQL function call (`publish_event()`, `sql/003_publish_event.sql`: lock + insert + NOTIFY) instead of a 5-statement transaction. The ordering lock is now held only while the database runs one statement, so the system-wide write ceiling no longer collapses with network distance: about 4,800 events/s next to the database (was 400–600) and 47–191/s at a 30 ms round trip (was ~6/s). The function is revoked from `PUBLIC`/`anon`/`authenticated`/`service_role` on every start, because Supabase would otherwise expose it through its REST API
+- `list` is one statement (`count(*) OVER ()`), not a 4-statement transaction; `create`/`update` no longer pre-check names. **Adapters must now enforce name uniqueness and raise `DuplicateItemNameError` themselves** (the in-memory adapter does; the service no longer checks first). A service write is the write plus one publish
+- Measured at a 30 ms round trip with 5 clients: list 20.8 → 46.2 req/s (median 238 → 105 ms), create 6.1 → 23.6 req/s (median 857 → 208 ms); a pool of 2 now matches what a pool of 5 did. `tests/test_round_trips.py` fails if a hot path costs more database calls than its budget
+
+### Fixed / Added (webhook limit, smoke test)
+- Webhook bodies are now bounded **while being read**: a chunked upload (no `Content-Length`) is cut off at `WEBHOOK_MAX_BODY_BYTES` instead of being buffered whole first (a 200 kB upload against a 1 kB limit used to read all 500 chunks; it now stops within 4)
+- `scripts/smoke_test.py`: repeatable end-to-end check of a running deployment (auth, CRUD, uniqueness race, scopes, SSE, WebSocket, signed webhooks; cleans up after itself, `--yes` required for non-local hosts); `scripts/modal_mint_token.py` mints short-lived tokens inside Modal; verified 28/28 against Modal `feat`. See `docs/smoke-test.md`
+- Docs corrected: event publish throughput is bounded by `1 / (5 × round-trip time)` under a database-wide lock (about 6 events/s at 30 ms, not a fixed 400–600/s), and the connections-per-container section now documents the 1–6 range and the measured cost of smaller pools
+
+### Changed (prod and dev configuration, metrics)
+- **Breaking for `prod`:** it now refuses to start with in-memory persistence or event bus unless `ALLOW_MEMORY_IN_PROD=true` (was a warning). Deploy it only after creating `supabase-db` in the Modal environment `prod`
+- `dev` and `prod` presets mount `supabase-db` and `webhook-secrets` like `feat` (create them per environment first) and cap containers (`dev` 3, `prod` 5) to bound database connections
+- Metrics carry a per-container `service.instance.id` (`MODAL_TASK_ID`): previously every container pushed the same series, so cumulative counters overwrote each other in Grafana
+- `EnvConfig.metric_export_interval_seconds` (default 60, was 15): fewer requests per container. This does **not** remove Grafana Cloud's occasional `429 Too Many Requests` on OTLP metric batches: a 17-minute soak with 3 containers at 60 s still saw 8 retries and 2 failed batches (~1 export in 5 retried), and a probe with no app running saw some too, while a later probe saw none — it is intermittent and gateway-side. Counters and histograms are cumulative, so a failed batch loses one data point, not data. If it matters, check Grafana Cloud's usage/limits for the stack or ask Grafana support
+- The OpenTelemetry startup log line reports each container's instance id and export interval
+
+### Added (live verification on Modal `feat`)
+- `EnvConfig.max_containers` (sent to Modal; validated; 3 on `feat`) and `webhook_secret_name` (mounts a Modal secret with `WEBHOOK_SECRET_<PROVIDER>`); `push_modal_secret.py` can push any keys with `--name`/`--keys` (secret-looking values are shown as `<hidden, N characters>`)
+- `EnvConfig.stream_heartbeat_seconds` (default 5, exported as `STREAM_HEARTBEAT_SECONDS`): behind Modal's proxy the app learns of a client disconnect only when a heartbeat write fails, so a closed stream held its cap slot for ~10 s with the 15 s heartbeat and reconnecting clients got 503; with 5 s a freed slot is reusable in under a second
+- Measured: moving Supabase from Seoul to `us-east-2` (next to Modal `us-east`) cut server-side request times 3.6–8.5× (docs/persistence.md)
+
+### Added (Modal + Supabase)
+- `scripts/push_modal_secret.py`: creates the `supabase-db` Modal secret from `.env` via the SDK (values never in argv or output), validates the connection strings first, refuses to overwrite without `--replace`, `--dry-run` shows key names only
+- The `feat` preset mounts `supabase-db` (`persistence_secret_name`); `dev` and `prod` are unchanged. A real push requires an explicit `--environment` (secrets are per Modal environment and the default is often prod)
+
+### Added (local Supabase testing)
+- `.env` support for local runs: `.env.example`, `scripts/set_supabase_password.py` (hidden prompt, URL-encodes the password), `scripts/check_supabase.py` (read-only preflight that explains common mistakes and never prints the password), `scripts/run_local.py`
+- **Security fix:** `.env` and its variants are now excluded from the Modal image (`modal_common.IMAGE_IGNORE`); previously `add_local_dir(".")` would have shipped a local `.env` into the image. A test checks this with Modal's own pattern matcher
+- pytest refuses a non-local `TEST_DATABASE_URL` unless `ALLOW_DESTRUCTIVE_DB_TESTS=yes` (the Postgres tests drop tables), reads only `TEST_*` / `DB_POOL_*` from `.env`, and uses a separate `TEST_LISTEN_DATABASE_URL` for LISTEN tests
+- The event bus verifies its LISTEN connection with a probe notification: a connection that succeeds but cannot receive (transaction pooler, wrong database) is detected, logged, and bypassed by polling instead of silently degrading
+
+### Added (business metrics)
+- `src/infrastructure/metrics.py` now defines the business instruments (`app.items.operations`, `app.items.operation.duration`, `app.events.published`, `app.events.publish.duration`, `app.events.delivery.lag`, `app.events.replayed`) with bounded label sets
+- Recorded by telemetry sidecars (`MeteredItemService`, `MeteredEventBus` in `src/adapters/telemetry/metered.py`) wired in `deps.py` like `TracingProxy`; `core/` and the routes contain no telemetry, and a test enforces that
+
+### Changed (metrics moved to the sidecar)
+- Stream and webhook metrics are now recorded by `TelemetryMiddleware` from the wire instead of by calls inside the endpoints; `src/api/` contains no telemetry code (a test enforces it). The error handler stores the stable `error_code` on the request for the sidecar to read
+- **Metric semantics changed:** SSE close reasons are now `client_disconnect` / `server_closed` / `error` (the old `max_duration` / `slow_consumer` split is gone for SSE — slow consumers are counted by the new `app.events.subscriptions.dropped`); WebSocket reasons come from close codes (new: `server_busy`, `rejected`, `other`); `stream.messages.sent` now counts every frame including heartbeats; `webhook.received` now also records `error` (publish failures)
+- `provider` on `webhook.received` is only labelled for configured providers (unknown providers and wrong methods are not recorded) so URL probing cannot create unbounded series
+
+### Fixed
+- Postgres and in-memory event buses disconnected healthy subscribers when a burst exceeded their queue (a 64-slot queue received 47 of 2000 events); the pump now yields between chunks and the default queue is 256
+- Docs claimed "thousands of events/s" for the Postgres bus; measured 400–600 events/s
+
+### Added (shared streaming state)
+- `EVENT_BUS_BACKEND=postgres`: events table + `LISTEN/NOTIFY` bus, Postgres webhook idempotency store and WebSocket ticket replay store, so SSE, WebSocket, webhook de-duplication and ticket single-use work across containers. Publishers serialise on an advisory lock so event ids are in commit order; works through a transaction pooler (`EVENT_BUS_LISTEN_URL` adds instant delivery over a session connection, polling otherwise)
+- `TicketReplayStore` port with in-memory and Postgres adapters
+- Topic scopes: `webhooks:read` / `items:read` are required in addition to `events:read` to subscribe to a topic, and WebSocket tickets carry only read scopes; `event_access.can_view()` hook for per-event visibility
+- Rate limits: per user on `POST /ws/ticket`, per provider on webhooks, per connection on WebSocket messages (`429 RATE_LIMITED` / close `1008`)
+- Contract tests run every EventBus / webhook store / ticket store backend through the same behaviour, plus cross-container tests (ordering under concurrent publishers, LISTEN loss and recovery, pruning)
+- Route-label contract tests, a guard that the installed packages match the deploy pins, and `wait_until` in place of fixed sleeps in async tests
+
+### Changed (shared streaming state)
+- **Breaking:** subscribing to the `items` / `webhooks` streams now needs `items:read` / `webhooks:read` as well as `events:read`
+- FastAPI's native request telemetry is disabled by default (`FASTAPI_NATIVE_TELEMETRY=true` restores it): it duplicated every server span and emitted a second, differently-unit `http.server.request.duration`
+- `TelemetryMiddleware` resolves route labels through a function that can never fail a request
+- `.github/requirements/test.txt` pins the same versions as the deploy image
+- `statement_cache_size=0` is now verified against PgBouncer 1.20 and guarded by a test
+
+### Added (persistence)
+- Postgres persistence adapter (`PERSISTENCE_BACKEND=postgres`, `DATABASE_URL`) built for Supabase's transaction pooler: asyncpg pool opened in the app lifespan (never baked into a Modal snapshot), `statement_cache_size=0`, SSL required for remote hosts, idempotent schema bootstrap under an advisory lock (`src/adapters/persistence/sql/001_create_items.sql`)
+- Name uniqueness enforced by a unique index on `lower(btrim(name))`, closing the check-then-write race across containers; violations surface as `DuplicateItemNameError` (409)
+- `StorageUnavailableError` → `503 STORAGE_UNAVAILABLE` with `Retry-After` when the database is unreachable (health also reports unhealthy)
+- `EnvConfig.persistence_secret_name` to mount a Modal secret holding `DATABASE_URL`
+- Repository contract tests run against every backend; CI starts a Postgres service and sets `TEST_DATABASE_URL`
+
 ### Added (streaming)
 - Server-Sent Events (`GET /events/stream`), WebSocket (`POST /ws/ticket`, `WS /ws`) and signed webhook ingestion (`POST /webhooks/{provider}`, generic HMAC-SHA256 with timestamp tolerance and idempotency) — see `docs/api/streaming.md`
 - `EventBus` and `WebhookEventStore` ports with in-memory adapters; `ItemService` publishes `item.created` / `item.updated` / `item.deleted`
