@@ -138,6 +138,38 @@ mounted via `EnvConfig.webhook_secret_name` (set on `feat` as `webhook-secrets`)
 `python scripts/push_modal_secret.py --environment feat --name webhook-secrets --keys WEBHOOK_SECRET_ACME`.
 Without it every `POST /webhooks/<provider>` answers 404.
 
+### Connections per container
+
+Each container holds **1 to 6** database connections, not always 6:
+
+| Connection | Count | When |
+|---|---|---|
+| Query pool | 1 at startup, growing to `DB_POOL_MAX_SIZE` (default 5) only when requests overlap | always |
+| `LISTEN` | 1, held for the container's whole life | only if `EVENT_BUS_LISTEN_URL` is set |
+
+So an idle container holds 2, the ceiling is 6, and the minimum is **1**
+(`DB_POOL_MAX_SIZE=1`, no `EVENT_BUS_LISTEN_URL`: events are then picked up by polling).
+Fewer connections cost throughput, because a connection serves one query at a time.
+Measured with the real app, 5 simultaneous clients (a container's
+`max_concurrent_requests`) and a 30 ms round trip, after the round-trip work (a list is
+one statement, a write is the write plus one `publish_event()` call, and there are no
+pre-check queries — `tests/test_round_trips.py` enforces that budget):
+
+| `DB_POOL_MAX_SIZE` | list items | create item |
+|---|---|---|
+| 1 | 9.4 req/s (median 526 ms) | 5.0 req/s (median 1147 ms) |
+| 2 | 19.1 req/s (median 305 ms) | 9.6 req/s (median 528 ms) |
+| 5 | 46.2 req/s (median 105 ms) | 23.6 req/s (median 208 ms) |
+
+For comparison, before that work the same benchmark gave 4.4 / 8.4 / 20.8 list req/s and
+2.2 / 4.0 / 6.1 create req/s for pools of 1 / 2 / 5: a pool of 2 now does what a pool of 5
+used to, so the same traffic needs far fewer connections. Reads scale almost linearly with
+the pool. With the database in the same region the round trips are tiny and a small pool
+goes much further. A reasonable low-traffic setting is `DB_POOL_MAX_SIZE=2`. Behind Supabase's transaction
+pooler these are cheap *client* connections that share a small pool of real Postgres
+connections; the `LISTEN` connection (session pooler) is the one that holds a dedicated
+Postgres connection per container.
+
 Capacity: set `EnvConfig.max_containers` (3 on `feat`); every container opens up to `DB_POOL_MAX_SIZE` (default 5, matching the
 per-container concurrency) connections to the pooler plus one `LISTEN` connection.
 Check `containers × (pool + 1)` against your Supabase plan's pooler client limit.
@@ -256,10 +288,19 @@ Guarantees and limits:
 
 * **Ordering.** Publishers take a transaction-level advisory lock, so event ids
   are in commit order and a reader can never skip an event that commits late.
-  The cost: publishing is serialised. Measured on a laptop against a local
-  Docker Postgres: roughly 400–600 events/s at any concurrency, with every event
-  delivered to a live subscriber. Ample for notifications and activity feeds; for
-  high-volume streams use a purpose-built broker (Redis Streams, NATS, Kafka).
+  Publishing is one statement — the `publish_event()` SQL function takes the lock,
+  inserts and notifies (`sql/003_publish_event.sql`) — so the lock is held only while
+  the database runs it, never across a network round trip. Measured system-wide on one
+  database: about **4,800 events/s** with the database next to the app, and at a 30 ms
+  round trip about **47/s with 5 connections and 191/s with 20** (it scales with
+  connections). It used to be a 5-step transaction holding the lock across the network,
+  which capped the whole system near 6 events/s at 30 ms whatever the connection count.
+  Still serialised, so for very high-volume streams use a purpose-built broker (Redis
+  Streams, NATS, Kafka). Keep the database in the same region as the app regardless.
+* **The function is locked down.** Supabase exposes `public` functions through its REST
+  API and grants them to its API roles by default, so `publish_event` is revoked from
+  `PUBLIC`, `anon`, `authenticated` and `service_role` on every start; only the role the
+  app connects as can call it.
 * **Replay** (`Last-Event-ID`) is served from the `events` table: the newest
   `EVENT_REPLAY_SIZE` events after the id. Rows older than
   `EVENT_RETENTION_SECONDS` (or beyond 100k rows) are pruned, so replay is
