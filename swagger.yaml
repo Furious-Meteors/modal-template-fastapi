@@ -1,12 +1,61 @@
 openapi: 3.0.3
 info:
   title: modal-template-fastapi
-  description: A FastAPI template deployed on Modal with CRUD endpoints.
   version: 1.0.0
+  description: |
+    A FastAPI template deployed on Modal: paginated CRUD, JWT auth with scopes, Server-Sent Events,
+    WebSockets and signed webhooks on a shared event bus, backed by Postgres/Supabase.
+
+    ## Authentication
+    Send `Authorization: Bearer <JWT>`. Tokens must carry `exp` and `sub` and a `scopes` list:
+    `items:read`, `items:write`, `events:read`, `webhooks:read`. Webhooks use an HMAC signature instead
+    (see `POST /webhooks/{provider}`).
+
+    ## Errors
+    Every error is the same flat body (`ErrorDetail`): `detail`, `session_id` (equals the
+    `x-session-id` response header), `error_code`, and `errors` for validation failures.
+
+    | Status | `error_code` values |
+    |---|---|
+    | 400 | `MISSING_TIMESTAMP`, `INVALID_TIMESTAMP`, `STALE_TIMESTAMP`, `MISSING_WEBHOOK_ID`, `INVALID_PAYLOAD` |
+    | 401 | `MISSING_TOKEN`, `TOKEN_EXPIRED`, `INVALID_TOKEN`, `INVALID_TICKET`, `TICKET_EXPIRED`, `MISSING_SIGNATURE`, `INVALID_SIGNATURE` |
+    | 403 | `INSUFFICIENT_SCOPE` |
+    | 404 | `ITEM_NOT_FOUND`, `NOT_FOUND`, `UNKNOWN_WEBHOOK_PROVIDER` |
+    | 405 | `METHOD_NOT_ALLOWED` |
+    | 409 | `ITEM_NAME_EXISTS` |
+    | 413 | `PAYLOAD_TOO_LARGE` |
+    | 422 | `VALIDATION_ERROR` |
+    | 429 | `RATE_LIMITED` (with `Retry-After`) |
+    | 500 | `INTERNAL_ERROR` |
+    | 503 | `STORAGE_UNAVAILABLE`, `STREAM_LIMIT_REACHED` (with `Retry-After`) |
+
+    ## Rate limits
+    Per container: `POST /ws/ticket` 30/min per user, `POST /webhooks/{provider}` 1200/min per provider,
+    WebSocket client messages 10/s per connection. Exceeding one gives `429 RATE_LIMITED`
+    (WebSocket: close code `1008`).
+  contact:
+    name: modal-template-fastapi
+    url: https://github.com/Furious-Meteors/modal-template-fastapi
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
 
 servers:
   - url: /api/v1
     description: API v1
+
+tags:
+  - name: Health
+    description: Liveness and dependency check.
+  - name: Items
+    description: Paginated CRUD. Names are unique (case and surrounding whitespace ignored).
+  - name: Streaming
+    description: Server-Sent Events and WebSockets over the shared event bus.
+  - name: Webhooks
+    description: Inbound webhooks verified with an HMAC-SHA256 signature.
+
+security:
+  - BearerAuth: []
 
 components:
   securitySchemes:
@@ -14,6 +63,127 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: >
+        JWT signed with HS256/HS384/HS512. Scopes come from the `scopes` claim.
+    WebhookSignature:
+      type: apiKey
+      in: header
+      name: X-Webhook-Signature
+      description: >
+        `sha256=<hex>` where hex is the HMAC-SHA256 of `"<X-Webhook-Timestamp>.<raw body>"` using the
+        secret in the `WEBHOOK_SECRET_<PROVIDER>` environment variable. `X-Webhook-Timestamp` and
+        `X-Webhook-Id` are also required.
+
+  parameters:
+    ItemId:
+      name: item_id
+      in: path
+      required: true
+      description: The unique ID of the item.
+      schema:
+        type: string
+
+  headers:
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
+        minimum: 1
+        example: 5
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            example: Bearer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+          examples:
+            missing:
+              value:
+                detail: Authorization header missing or malformed
+                session_id: 550e8400-e29b-41d4-a716-446655440000
+                error_code: MISSING_TOKEN
+            expired:
+              value:
+                detail: Token has expired
+                session_id: 550e8400-e29b-41d4-a716-446655440000
+                error_code: TOKEN_EXPIRED
+    Forbidden:
+      description: The token lacks a required scope.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+          example:
+            detail: "Missing required scopes: items:write"
+            session_id: 550e8400-e29b-41d4-a716-446655440000
+            error_code: INSUFFICIENT_SCOPE
+    NotFound:
+      description: Item not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+          example:
+            detail: Item 'abc' not found
+            session_id: 550e8400-e29b-41d4-a716-446655440000
+            error_code: ITEM_NOT_FOUND
+    Conflict:
+      description: An item with this name already exists (compared ignoring case and surrounding whitespace).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+          example:
+            detail: An item named 'Widget' already exists
+            session_id: 550e8400-e29b-41d4-a716-446655440000
+            error_code: ITEM_NAME_EXISTS
+    ValidationError:
+      description: Request validation failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+          example:
+            detail: Request validation failed
+            session_id: 550e8400-e29b-41d4-a716-446655440000
+            error_code: VALIDATION_ERROR
+            errors:
+              - field: body.name
+                message: "Value error, name must not be blank"
+                type: value_error
+    RateLimited:
+      description: Rate limit exceeded; retry after the given delay.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+          example:
+            detail: Too many requests; slow down
+            session_id: 550e8400-e29b-41d4-a716-446655440000
+            error_code: RATE_LIMITED
+    StorageUnavailable:
+      description: The database is temporarily unreachable. Safe to retry.
+      headers:
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorDetail"
+          example:
+            detail: Storage is temporarily unavailable; retry shortly
+            session_id: 550e8400-e29b-41d4-a716-446655440000
+            error_code: STORAGE_UNAVAILABLE
 
   schemas:
     ErrorDetail:
@@ -26,15 +196,15 @@ components:
         session_id:
           type: string
           nullable: true
-          description: Session ID if available
+          description: Session ID; equals the `x-session-id` response header.
         error_code:
           type: string
           nullable: true
-          description: Error code for programmatic handling
+          description: Stable code for programmatic handling (see the table in the API description).
         errors:
           type: array
           nullable: true
-          description: Per-field details; present only for validation errors
+          description: Per-field details; present only for validation errors.
           items:
             $ref: "#/components/schemas/FieldError"
 
@@ -47,29 +217,34 @@ components:
       properties:
         field:
           type: string
-          description: Dotted location, e.g. body.name or query.limit
+          description: Dotted location, e.g. `body.name` or `query.limit`.
         message:
           type: string
+          description: What is wrong with the value.
         type:
           type: string
+          description: Machine-readable validation error type.
 
-    GenericRequest:
+    ItemRequest:
       type: object
+      description: Create or fully replace an item. Optional fields omitted on `PUT` are cleared.
       required:
-        - data
+        - name
       properties:
-        data:
-          type: object
-          additionalProperties: true
-          description: Request data payload
-          example:
-            name: example
-            value: 123
+        name:
+          type: string
+          minLength: 1
+          description: Item name. Trimmed on input; blank names are rejected. Unique across the service.
+          example: Widget
+        description:
+          type: string
+          nullable: true
+          description: Optional description.
         project_id:
           type: string
           nullable: true
           minLength: 1
-          description: The project ID for tracking and organization.
+          description: Project identifier for grouping and tracking.
           example: my-project-123
 
     ItemResponse:
@@ -81,19 +256,54 @@ components:
       properties:
         session_id:
           type: string
-          description: Unique session ID for tracking this request
+          description: Unique session ID for tracking this request.
           example: 550e8400-e29b-41d4-a716-446655440000
         status:
           type: string
-          description: Status of the operation
+          description: "`success`, `created` or `updated`."
+          example: created
         message:
           type: string
-          description: Human-readable message about the operation
+          description: Human-readable message about the operation.
+          example: Item created successfully
         data:
           type: object
           additionalProperties: true
           nullable: true
-          description: Item data
+          description: The item.
+          example:
+            id: 9f30f2b8-5f15-4389-a79f-7a399e02f4ec
+            name: Widget
+            description: null
+            project_id: null
+
+    PaginatedItemsResponse:
+      type: object
+      required:
+        - items
+        - total
+        - limit
+        - offset
+        - has_more
+      properties:
+        items:
+          type: array
+          description: Page of items, in creation order.
+          items:
+            type: object
+            additionalProperties: true
+        total:
+          type: integer
+          description: Total number of items across all pages.
+        limit:
+          type: integer
+          description: Maximum items returned in this page.
+        offset:
+          type: integer
+          description: Number of items skipped.
+        has_more:
+          type: boolean
+          description: True when more items exist beyond this page.
 
     HealthCheckResponse:
       type: object
@@ -106,7 +316,7 @@ components:
       properties:
         session_id:
           type: string
-          description: Unique session ID for tracking this request
+          description: Unique session ID for tracking this request.
           example: 550e8400-e29b-41d4-a716-446655440000
         status:
           type: string
@@ -115,63 +325,132 @@ components:
             - unhealthy
         service_name:
           type: string
+          example: modal-template-fastapi-prod
         version:
           type: string
+          example: 1.0.0
         services_summary:
           type: object
           additionalProperties: true
-          description: Summary of services health status
+          description: Summary of dependency health.
           example:
-            total: 6
-            healthy: 6
+            total: 1
+            healthy: 1
             unhealthy: 0
 
-security:
-  - BearerAuth: []
+    WsTicketResponse:
+      type: object
+      description: A short-lived, single-use credential for opening a WebSocket.
+      required:
+        - ticket
+        - expires_in
+      properties:
+        ticket:
+          type: string
+          description: Pass as `?ticket=` when connecting to `/ws`. Carries only your read scopes.
+        expires_in:
+          type: integer
+          description: Seconds until the ticket expires.
+          example: 30
+
+    WebhookResponse:
+      type: object
+      required:
+        - session_id
+        - status
+        - message
+      properties:
+        session_id:
+          type: string
+          description: Unique session ID for tracking this request.
+        status:
+          type: string
+          enum:
+            - accepted
+            - duplicate
+          description: "`accepted` on first delivery; `duplicate` when this `X-Webhook-Id` was already received."
+        message:
+          type: string
+          description: Human-readable message about the delivery.
 
 paths:
   /health:
     get:
-      summary: Health Check
+      summary: Health check
+      description: >
+        Performs a real database read. Returns `503` with `status: unhealthy` when the persistence
+        backend cannot be reached. No authentication.
       operationId: health_check
       tags:
         - Health
       security: []
       responses:
         "200":
-          description: Service is healthy
+          description: Service and its database are healthy.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthCheckResponse"
+        "503":
+          description: The database is unreachable; `status` is `unhealthy`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthCheckResponse"
+              example:
+                session_id: 550e8400-e29b-41d4-a716-446655440000
+                status: unhealthy
+                service_name: modal-template-fastapi-prod
+                version: 1.0.0
+                services_summary:
+                  total: 1
+                  healthy: 0
+                  unhealthy: 1
 
   /items:
     get:
-      summary: List Items
+      summary: List items
+      description: Requires scope `items:read`. Items are returned in creation order.
       operationId: list_items
       tags:
         - Items
       security:
         - BearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum items to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: offset
+          in: query
+          description: Number of items to skip.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
       responses:
         "200":
-          description: List of all items
+          description: A page of items.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  type: object
-                  additionalProperties: true
+                $ref: "#/components/schemas/PaginatedItemsResponse"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorDetail"
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          $ref: "#/components/responses/StorageUnavailable"
 
     post:
-      summary: Create Item
+      summary: Create item
+      description: Requires scope `items:write`. Publishes an `item.created` event.
       operationId: create_item
       tags:
         - Items
@@ -182,38 +461,32 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/GenericRequest"
+              $ref: "#/components/schemas/ItemRequest"
       responses:
         "201":
-          description: Item created successfully
+          description: Item created.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ItemResponse"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorDetail"
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "422":
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorDetail"
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          $ref: "#/components/responses/StorageUnavailable"
 
   /items/{item_id}:
     parameters:
-      - name: item_id
-        in: path
-        required: true
-        schema:
-          type: string
-        description: The unique ID of the item
+      - $ref: "#/components/parameters/ItemId"
 
     get:
-      summary: Get Item
+      summary: Get item
+      description: Requires scope `items:read`.
       operationId: get_item
       tags:
         - Items
@@ -221,26 +494,28 @@ paths:
         - BearerAuth: []
       responses:
         "200":
-          description: Item retrieved successfully
+          description: Item retrieved.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ItemResponse"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorDetail"
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
-          description: Item not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorDetail"
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          $ref: "#/components/responses/StorageUnavailable"
 
     put:
-      summary: Update Item
+      summary: Replace item
+      description: >
+        Requires scope `items:write`. Full replacement: `name` is required and any optional field
+        omitted (`description`, `project_id`) is cleared. An item may keep its own name. Publishes an
+        `item.updated` event.
       operationId: update_item
       tags:
         - Items
@@ -251,35 +526,30 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/GenericRequest"
+              $ref: "#/components/schemas/ItemRequest"
       responses:
         "200":
-          description: Item updated successfully
+          description: Item updated.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ItemResponse"
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorDetail"
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
-          description: Item not found
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorDetail"
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "422":
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorDetail"
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          $ref: "#/components/responses/StorageUnavailable"
 
     delete:
-      summary: Delete Item
+      summary: Delete item
+      description: Requires scope `items:write`. Publishes an `item.deleted` event.
       operationId: delete_item
       tags:
         - Items
@@ -287,16 +557,300 @@ paths:
         - BearerAuth: []
       responses:
         "204":
-          description: Item deleted successfully
+          description: Item deleted.
         "401":
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorDetail"
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
-          description: Item not found
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          $ref: "#/components/responses/StorageUnavailable"
+
+  /events/stream:
+    get:
+      summary: Server-Sent Events stream
+      description: |
+        A long-lived `text/event-stream`. Requires scope `events:read` **plus** the topic's scope
+        (`items:read` for `items`, `webhooks:read` for `webhooks`).
+
+        Frames: `retry: 3000`, then `id: <n>` / `event: <type>` / `data: <json>` per event, and
+        `: heartbeat` comments while idle (every 5 s on Modal). Send `Last-Event-ID` to resume after a
+        reconnect: events still in the replay buffer (the last 100 per topic) are replayed first.
+
+        The server ends the stream itself before Modal's request timeout (about 120 s); `EventSource`
+        reconnects automatically. A consumer that cannot keep up is disconnected and may resume.
+        A closed stream frees its connection slot within one heartbeat, so a client that reconnects
+        instantly can get `503 STREAM_LIMIT_REACHED` and should wait `Retry-After` seconds.
+
+        Event types: `item.created`, `item.updated` (data: the item), `item.deleted` (data:
+        `{"id": "..."}`), `webhook.<provider>` (data: `{"webhook_id", "provider", "payload"}`).
+      operationId: stream_events
+      tags:
+        - Streaming
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: topic
+          in: query
+          description: Event topic.
+          schema:
+            type: string
+            enum:
+              - items
+              - webhooks
+            default: items
+        - name: Last-Event-ID
+          in: header
+          description: Resume after this event id (best-effort replay).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                retry: 3000
+
+                id: 7
+                event: item.created
+                data: {"id": "9f30f2b8-5f15-4389-a79f-7a399e02f4ec", "name": "Widget", "description": null, "project_id": null}
+
+                : heartbeat
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "503":
+          description: This instance has no free stream slot.
+          headers:
+            Retry-After:
+              $ref: "#/components/headers/RetryAfter"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorDetail"
+              example:
+                detail: Too many open streams on this instance; retry shortly
+                session_id: 550e8400-e29b-41d4-a716-446655440000
+                error_code: STREAM_LIMIT_REACHED
+
+  /ws/ticket:
+    post:
+      summary: Get a WebSocket ticket
+      description: >
+        Browsers cannot set an `Authorization` header when opening a WebSocket. Exchange your Bearer
+        JWT for a single-use ticket (valid 30 s, carrying only your read scopes) and connect to
+        `/ws?ticket=<ticket>`. Requires scope `events:read`. Rate limited per user.
+      operationId: issue_ws_ticket
+      tags:
+        - Streaming
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: A ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WsTicketResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /ws:
+    get:
+      summary: WebSocket event stream
+      description: |
+        Upgrade to a WebSocket (`wss://<host>/api/v1/ws?ticket=<ticket>&topic=items`). OpenAPI cannot
+        describe a WebSocket, so this entry documents the protocol.
+
+        **Query:** `ticket` (required, from `POST /ws/ticket`; single use), `topic` (`items` default, or
+        `webhooks`), `last_event_id` (resume, as for SSE).
+
+        **Messages (JSON text frames)**
+
+        | Direction | Message |
+        |---|---|
+        | server → client | `{"type":"event","id":"7","event":"item.created","data":{...}}` |
+        | server → client | `{"type":"heartbeat"}` while idle |
+        | client → server | `{"type":"ping"}` → `{"type":"pong"}` |
+        | server → client | `{"type":"error","code":"INVALID_JSON"}` or `"UNSUPPORTED_MESSAGE"` |
+
+        **Close codes**
+
+        | Code | Meaning |
+        |---|---|
+        | 1001 | maximum duration reached — reconnect with a new ticket |
+        | 1008 | client sent messages faster than 10/s |
+        | 1009 | client message larger than 4 KB |
+        | 1013 | server busy (connection cap) or slow consumer |
+        | 4400 | unknown topic |
+        | 4401 | ticket missing, invalid, expired or already used |
+        | 4403 | the ticket lacks `events:read` or the topic's scope |
+      operationId: stream_ws
+      tags:
+        - Streaming
+      security: []
+      parameters:
+        - name: ticket
+          in: query
+          required: true
+          description: Single-use ticket from `POST /ws/ticket`.
+          schema:
+            type: string
+        - name: topic
+          in: query
+          schema:
+            type: string
+            enum:
+              - items
+              - webhooks
+            default: items
+        - name: last_event_id
+          in: query
+          description: Resume after this event id (best-effort replay).
+          schema:
+            type: string
+      responses:
+        "101":
+          description: Switching Protocols — the WebSocket is open. Authentication failures close it with 4401/4403 after the handshake.
+
+  /webhooks/{provider}:
+    post:
+      summary: Receive a signed webhook
+      description: |
+        No JWT: the request is authenticated by an HMAC-SHA256 signature. The secret for provider `acme`
+        is the environment variable `WEBHOOK_SECRET_ACME`; provider names match
+        `[a-z0-9][a-z0-9_-]{0,31}`.
+
+        Checks run in this order and nothing is parsed or stored until the signature verifies:
+        provider configured → rate limit → body size (enforced while reading, 1 MiB) → timestamp
+        within ±300 s → signature (constant-time) → `X-Webhook-Id` present → body is a JSON object →
+        duplicate check → publish to the `webhooks` topic.
+
+        Returns `202` on first delivery and `200` with `status: duplicate` for a repeat of the same
+        `(provider, X-Webhook-Id)`. If publishing fails the id is forgotten and a `500` is returned,
+        so the provider's retry is processed. The handler only validates and publishes; do the real
+        work in a consumer of the `webhooks` topic.
+      operationId: receive_webhook
+      tags:
+        - Webhooks
+      security:
+        - WebhookSignature: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          description: Configured webhook provider.
+          schema:
+            type: string
+            pattern: "^[a-z0-9][a-z0-9_-]{0,31}$"
+            example: acme
+        - name: X-Webhook-Id
+          in: header
+          required: true
+          description: Unique delivery id (idempotency key), 1–128 printable characters.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+        - name: X-Webhook-Timestamp
+          in: header
+          required: true
+          description: Unix seconds. Must be within ±300 s of the server clock.
+          schema:
+            type: integer
+        - name: X-Webhook-Signature
+          in: header
+          required: true
+          description: "`sha256=` + hex HMAC-SHA256 of `\"<timestamp>.<raw body>\"`."
+          schema:
+            type: string
+            example: sha256=3b8f...
+      requestBody:
+        required: true
+        description: Any JSON object (maximum 1 MiB).
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+            example:
+              event: invoice.paid
+              amount: 42
+      responses:
+        "202":
+          description: Accepted (first delivery).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookResponse"
+              example:
+                session_id: 550e8400-e29b-41d4-a716-446655440000
+                status: accepted
+                message: Webhook accepted
+        "200":
+          description: Duplicate delivery — already received, nothing published again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookResponse"
+              example:
+                session_id: 550e8400-e29b-41d4-a716-446655440000
+                status: duplicate
+                message: Webhook already received
+        "400":
+          description: Missing/invalid/stale timestamp, missing webhook id, or the body is not a JSON object.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+              example:
+                detail: Webhook timestamp outside the allowed window
+                session_id: 550e8400-e29b-41d4-a716-446655440000
+                error_code: STALE_TIMESTAMP
+        "401":
+          description: Missing or invalid signature.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+              example:
+                detail: Invalid webhook signature
+                session_id: 550e8400-e29b-41d4-a716-446655440000
+                error_code: INVALID_SIGNATURE
+        "404":
+          description: Unknown or unconfigured provider.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+              example:
+                detail: Unknown webhook provider
+                session_id: 550e8400-e29b-41d4-a716-446655440000
+                error_code: UNKNOWN_WEBHOOK_PROVIDER
+        "413":
+          description: Body larger than the limit (enforced while reading, so chunked uploads are cut off too).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorDetail"
+              example:
+                detail: Webhook body too large
+                session_id: 550e8400-e29b-41d4-a716-446655440000
+                error_code: PAYLOAD_TOO_LARGE
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "429":
+          $ref: "#/components/responses/RateLimited"

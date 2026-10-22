@@ -12,3 +12,5 @@ opentelemetry-sdk==1.45.1
 opentelemetry-exporter-otlp-proto-http==1.45.1
 opentelemetry-semantic-conventions==0.66b1
 opentelemetry-instrumentation-logging==0.66b1
+openapi-spec-validator
+pyyaml
