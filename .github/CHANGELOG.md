@@ -11,6 +11,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed (database round trips)
+- Event publish is a single SQL function call (`publish_event()`, `sql/003_publish_event.sql`: lock + insert + NOTIFY) instead of a 5-statement transaction. The ordering lock is now held only while the database runs one statement, so the system-wide write ceiling no longer collapses with network distance: about 4,800 events/s next to the database (was 400–600) and 47–191/s at a 30 ms round trip (was ~6/s). The function is revoked from `PUBLIC`/`anon`/`authenticated`/`service_role` on every start, because Supabase would otherwise expose it through its REST API
+- `list` is one statement (`count(*) OVER ()`), not a 4-statement transaction; `create`/`update` no longer pre-check names. **Adapters must now enforce name uniqueness and raise `DuplicateItemNameError` themselves** (the in-memory adapter does; the service no longer checks first). A service write is the write plus one publish
+- Measured at a 30 ms round trip with 5 clients: list 20.8 → 46.2 req/s (median 238 → 105 ms), create 6.1 → 23.6 req/s (median 857 → 208 ms); a pool of 2 now matches what a pool of 5 did. `tests/test_round_trips.py` fails if a hot path costs more database calls than its budget
+
+### Fixed / Added (webhook limit, smoke test)
+- Webhook bodies are now bounded **while being read**: a chunked upload (no `Content-Length`) is cut off at `WEBHOOK_MAX_BODY_BYTES` instead of being buffered whole first (a 200 kB upload against a 1 kB limit used to read all 500 chunks; it now stops within 4)
+- `scripts/smoke_test.py`: repeatable end-to-end check of a running deployment (auth, CRUD, uniqueness race, scopes, SSE, WebSocket, signed webhooks; cleans up after itself, `--yes` required for non-local hosts); `scripts/modal_mint_token.py` mints short-lived tokens inside Modal; verified 28/28 against Modal `feat`. See `docs/smoke-test.md`
+- Docs corrected: event publish throughput is bounded by `1 / (5 × round-trip time)` under a database-wide lock (about 6 events/s at 30 ms, not a fixed 400–600/s), and the connections-per-container section now documents the 1–6 range and the measured cost of smaller pools
+
 ### Changed (prod and dev configuration, metrics)
 - **Breaking for `prod`:** it now refuses to start with in-memory persistence or event bus unless `ALLOW_MEMORY_IN_PROD=true` (was a warning). Deploy it only after creating `supabase-db` in the Modal environment `prod`
 - `dev` and `prod` presets mount `supabase-db` and `webhook-secrets` like `feat` (create them per environment first) and cap containers (`dev` 3, `prod` 5) to bound database connections
