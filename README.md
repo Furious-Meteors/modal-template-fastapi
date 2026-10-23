@@ -3,13 +3,13 @@
   <img src="https://raw.githubusercontent.com/Furious-Meteors/modal-template-fastapi/production/docs/assets/images/banner.png" alt="openframe-core" width="100%" />
 </p>
 
-> A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT auth with scopes, paginated CRUD, **Postgres/Supabase persistence with versioned migrations**, **SSE, WebSocket and signed-webhook streaming that works across containers**, a telemetry-sidecar pattern with OpenTelemetry and Grafana Cloud, a 629-test suite, and automated CI/CD. Measured, not guessed: see [Measured performance](#measured-performance).
+> A production-ready FastAPI template deployed serverlessly on Modal — Hexagonal Architecture, JWT auth with scopes, paginated CRUD, **Postgres/Supabase persistence with versioned migrations**, **SSE, WebSocket and signed-webhook streaming that works across containers**, a telemetry-sidecar pattern with OpenTelemetry and Grafana Cloud, a 681-test suite, and automated CI/CD. Measured, not guessed: see [Measured performance](#measured-performance).
 
 [![Python](https://img.shields.io/badge/Python-3.11-4f46e5?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![Modal](https://img.shields.io/badge/Modal-Serverless-7c3aed?style=flat-square)](https://modal.com)
 [![Postgres](https://img.shields.io/badge/Postgres-Supabase-3ecf8e?style=flat-square&logo=supabase&logoColor=white)](#persistence--migrations)
-[![Tests](https://img.shields.io/badge/Tests-629%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-681%20passing-15803d?style=flat-square&logo=pytest&logoColor=white)](tests/)
 [![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-enabled-f5a800?style=flat-square&logo=opentelemetry&logoColor=white)](src/infrastructure/)
 [![Grafana](https://img.shields.io/badge/Grafana-Cloud-f46800?style=flat-square&logo=grafana&logoColor=white)](#observability)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-4f46e5?style=flat-square&logo=materialformkdocs&logoColor=white)](https://furious-meteors.github.io/modal-template-fastapi/)
@@ -32,7 +32,7 @@ The template is built on **Hexagonal Architecture (Ports & Adapters)** so every 
 - 🔭 **Telemetry sidecars** — `TelemetryMiddleware` (HTTP + WebSocket), `TracingProxy`, `MeteredItemService`/`MeteredEventBus`; `core/` and `api/` contain **no** telemetry code (a test enforces it)
 - 📊 **OpenTelemetry + Grafana Cloud** — traces, HTTP / stream / webhook / business metrics, per-container instance ids
 - ☁️ **Modal serverless** — `feat` / `dev` / `prod` via `EnvConfig`, container caps, memory snapshots, `prod` refuses to start on in-memory storage
-- 🧪 **629-test suite** — contract tests run against every backend, round-trip budgets, mutation-verified guards; a repeatable [smoke test](docs/smoke-test.md) for any deployment
+- 🧪 **681-test suite** — contract tests run against every backend, round-trip budgets, mutation-verified guards; a repeatable [smoke test](docs/smoke-test.md) for any deployment
 - 🔌 **Platform-decoupled** — `src/` has zero Modal imports; runs on any ASGI host unchanged
 
 ---
@@ -101,7 +101,7 @@ modal-template-fastapi/
 │   ├── deps.py                        # Wiring: adapters → services, sidecars, startup validation
 │   ├── core/                          # Pure business logic — zero I/O or telemetry imports
 │   │   ├── domain/                    # item.py, events.py, errors.py
-│   │   ├── ports/                     # ItemRepository, EventBus, WebhookEventStore, TicketReplayStore
+│   │   ├── ports/                     # ItemRepository, EventBus, WebhookEventStore, TicketReplayStore, RateLimiter, TokenVerifier
 │   │   └── services/item_service.py   # Business logic; publishes item.created/updated/deleted
 │   ├── adapters/                      # Concrete implementations — know about core, not HTTP routes
 │   │   ├── http/middleware.py         # TelemetryMiddleware — pure ASGI: HTTP + WebSocket + stream/webhook metrics
@@ -109,7 +109,9 @@ modal-template-fastapi/
 │   │   │   ├── memory.py              # InMemoryItemRepository (dev/tests; enforces name uniqueness)
 │   │   │   ├── postgres.py            # PostgresItemRepository + pool (Supabase-ready)
 │   │   │   ├── migrations.py          # Versioned migration runner
-│   │   │   └── sql/                   # 001–003 versioned, R__publish_event_lockdown repeatable
+│   │   │   └── sql/                   # 001–004 versioned, R__publish_event_lockdown repeatable
+│   │   ├── auth/jwt.py                # TokenVerifier: shared secret (HS*) or identity-provider JWKS (RS*/ES*)
+│   │   ├── ratelimit/postgres.py      # RateLimiter shared by every container (fixed window)
 │   │   ├── events/
 │   │   │   ├── memory.py              # In-memory bus, webhook store, ticket store
 │   │   │   └── postgres.py            # Postgres bus (events table + LISTEN/NOTIFY), webhook + ticket stores
@@ -126,7 +128,7 @@ modal-template-fastapi/
 │   └── utils/                         # config.py (env), dburl.py (safe URL checks), envfile.py (.env reader)
 ├── scripts/                           # run_local, check_supabase, set_supabase_password, migrate,
 │                                      # push_modal_secret, modal_mint_token, smoke_test, jwt_token_generator
-├── tests/                             # 629 tests (see Testing)
+├── tests/                             # 681 tests (see Testing)
 ├── modal_app.py                       # Modal Cls, @enter telemetry init, ASGI wrapper
 ├── modal_common.py                    # EnvConfig, pinned image, environment presets
 ├── .env.example                       # Template for local Supabase settings (copy to .env — git-ignored)
@@ -181,7 +183,7 @@ pip install -r .github/requirements/test.txt
 # 2. Run the suite — no database needed (531 tests run; 98 Postgres tests skip)
 pytest
 
-# 3. Include the Postgres tests (all 629): a disposable database only — they DROP tables
+# 3. Include the Postgres tests (all 681): a disposable database only — they DROP tables
 docker run -d --name pg -e POSTGRES_PASSWORD=pgpass -e POSTGRES_DB=app -p 55432:5432 postgres:16-alpine
 TEST_DATABASE_URL=postgresql://postgres:pgpass@localhost:55432/app pytest
 
@@ -301,7 +303,7 @@ Details, close codes and examples: [Streaming & Webhooks](https://your-org.githu
 
 ## Authentication & Authorisation
 
-**JWT Bearer tokens** with scope-based authorisation. Tokens must carry `exp` and `sub`; `JWT_ALGORITHM` is limited to `HS256`/`HS384`/`HS512`; set `JWT_AUDIENCE` / `JWT_ISSUER` to also enforce `aud` / `iss`. `JWT_SECRET` must be at least 32 characters and is validated at startup, so a bad config stops the container instead of failing the first request.
+**JWT Bearer tokens** with scope-based authorisation. Tokens must carry `exp` and `sub`; `JWT_ALGORITHM` is limited to `HS256`/`HS384`/`HS512`; with `AUTH_BACKEND=jwks` tokens are verified against your identity provider's published keys instead (see [Swapping a layer](#swapping-a-layer)); set `JWT_AUDIENCE` / `JWT_ISSUER` to also enforce `aud` / `iss`. `JWT_SECRET` must be at least 32 characters and is validated at startup, so a bad config stops the container instead of failing the first request.
 
 ```python
 current_user: TokenPayload = Depends(require_scope("items:read"))    # reads
@@ -380,25 +382,31 @@ Set through `EnvConfig` in `modal_common.py` (which exports them) or directly as
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `JWT_SECRET` · `JWT_ALGORITHM` · `JWT_AUDIENCE` · `JWT_ISSUER` | — · `HS256` · — · — | Token verification |
+| `AUTH_BACKEND` | `secret` | `secret` (shared HS* secret) or `jwks` (identity provider keys) |
+| `JWT_SECRET` · `JWT_ALGORITHM` · `JWT_AUDIENCE` · `JWT_ISSUER` | — · `HS256` (`RS256` with jwks) · — · — | Token verification |
+| `JWT_JWKS_URL` · `JWT_SCOPES_CLAIM` · `WS_TICKET_SECRET` | — · `scopes` (falls back to OAuth2 `scope`) · `JWT_SECRET` | `jwks` mode: key URL, claim holding scopes, secret that signs WebSocket tickets (required with jwks) |
 | `PERSISTENCE_BACKEND` · `EVENT_BUS_BACKEND` | `memory` | `memory` or `postgres` |
 | `DATABASE_URL` · `EVENT_BUS_LISTEN_URL` | — | Transaction-pooler URL · session-level URL for instant events (optional) |
+| `DATABASE_MODE` | `pooler` | `pooler` (transaction pooler, statement cache off) or `direct` (cache on: one wire round trip per query instead of two) |
 | `DATABASE_SSL` · `DB_POOL_MAX_SIZE` · `DB_POOL_MIN_SIZE` · `DB_COMMAND_TIMEOUT_SECONDS` | `require` (remote) · 5 · 1 · 10 | Connection pool |
 | `AUTO_MIGRATE` · `MIGRATION_LOCK_TIMEOUT_SECONDS` · `MIGRATION_STATEMENT_TIMEOUT_SECONDS` | `true` · 120 · 300 | Schema migrations |
 | `EVENT_BUS_POLL_MS` · `EVENT_RETENTION_SECONDS` · `EVENT_REPLAY_SIZE` | 1000 · 3600 · 100 | Postgres event bus |
 | `STREAM_MAX_CONNECTIONS` · `STREAM_HEARTBEAT_SECONDS` · `STREAM_MAX_DURATION_SECONDS` | 3 · 5 · 120 (Modal) | Streams (derived from `EnvConfig`) |
 | `WS_MAX_MESSAGE_BYTES` · `WS_TICKET_TTL_SECONDS` | 4096 · 30 | WebSocket |
 | `WEBHOOK_SECRET_<PROVIDER>` · `WEBHOOK_TOLERANCE_SECONDS` · `WEBHOOK_MAX_BODY_BYTES` · `WEBHOOK_IDEMPOTENCY_TTL_SECONDS` | — · 300 · 1 MiB · 86400 | Webhooks |
-| `RATE_TICKET_PER_MINUTE` · `RATE_WEBHOOK_PER_MINUTE` · `RATE_WS_MESSAGES_PER_SECOND` | 30 · 1200 · 10 | Rate limits (per container) |
+| `RATE_LIMIT_BACKEND` | `memory` | `memory` (per container) or `postgres` (one counter shared by every container) |
+| `RATE_TICKET_PER_MINUTE` · `RATE_WEBHOOK_PER_MINUTE` · `RATE_WS_MESSAGES_PER_SECOND` | 30 · 1200 · 10 | Rate limits (WebSocket messages are always per connection) |
 | `ALLOW_MEMORY_IN_PROD` | unset | Opt in to in-memory storage in `prod` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` · `OTEL_EXPORTER_OTLP_HEADERS` | — | Any OTLP/HTTP backend (`GRAFANA_INSTANCE_ID` + `GRAFANA_OTLP_TOKEN` is a Grafana shortcut for the headers) |
 | `OTEL_METRIC_EXPORT_INTERVAL_MS` · `FASTAPI_NATIVE_TELEMETRY` | 60000 (Modal) · off | Telemetry |
+| `APP_ENV` · `INSTANCE_ID` | `MODAL_ENV` · `MODAL_TASK_ID`/hostname | Environment name and container id on any host |
 | `TEST_DATABASE_URL` · `TEST_LISTEN_DATABASE_URL` · `ALLOW_DESTRUCTIVE_DB_TESTS` | — | Postgres tests (drop tables!) |
 
 ---
 
 ## Testing
 
-**629 tests** (about 14 s without a database; about 25 s with Postgres), on Python 3.11 and 3.14.
+**681 tests** (about 14 s without a database; about 25 s with Postgres), on Python 3.11 and 3.14.
 
 - **Contract tests** run the same behaviour against every backend (item repository, event bus, webhook and ticket stores): ordering, replay, slow-consumer drop, uniqueness races.
 - **Concurrency tests** use several independent bus/pool instances standing in for containers.
@@ -418,12 +426,27 @@ Set through `EnvConfig` in `modal_common.py` (which exports them) or directly as
 3. Add a numbered migration for any schema change (`src/adapters/persistence/sql/004_….sql`)
 4. Edit `src/api/models.py` and `src/api/routes.py`
 
-### Add a persistence backend or event bus
+### Swapping a layer
 
-1. Implement the port(s) in `src/adapters/…` — repositories must enforce name uniqueness and raise `DuplicateItemNameError` themselves
-2. Add the backend to `_REQUIRED_ENV` / `_REQUIRED_EVENT_BUS_ENV` and a branch in `src/deps.py` (open pools in `init_resources()`, never at import)
-3. Add it to the backend fixtures in `tests/test_item_repository_contract.py` / `test_event_bus.py` / `test_shared_state_contract.py` so it must pass the same contract
-4. Set `PERSISTENCE_BACKEND` / `EVENT_BUS_BACKEND` in your Modal secret
+Every capability sits behind a small port in `src/core/ports/`. A swap is one adapter, one line in `src/deps.py`, and an environment variable; nothing in `core/` or `api/` changes, and the contract tests every backend must pass are already written.
+
+| Layer | Port | Adapters today | Switch with | To add another |
+|---|---|---|---|---|
+| Item storage | `ItemRepository` | memory, Postgres | `PERSISTENCE_BACKEND` | adapter in `adapters/persistence/`, branch in `_get_repository`, add to `tests/test_item_repository_contract.py` |
+| Event bus | `EventBus` | memory, Postgres (`LISTEN/NOTIFY`) | `EVENT_BUS_BACKEND` | adapter in `adapters/events/`; must keep per-topic order and replay (`test_event_bus.py`) |
+| Webhook / ticket state | `WebhookEventStore`, `TicketReplayStore` | memory, Postgres | follows `EVENT_BUS_BACKEND` | needs an atomic "first one wins" (`test_shared_state_contract.py`) |
+| Rate limiting | `RateLimiter` | per-container token bucket, Postgres fixed window | `RATE_LIMIT_BACKEND` | adapter in `adapters/ratelimit/`, branch in `_install_rate_limiters` (Redis `INCR`+`EXPIRE` fits) |
+| Authentication | `TokenVerifier` | shared secret (HS*), JWKS (RS*/ES*/PS*) | `AUTH_BACKEND` | adapter in `adapters/auth/`, branch in `get_token_verifier` |
+| Telemetry | none: OpenTelemetry is the port | any OTLP/HTTP backend | `OTEL_EXPORTER_OTLP_ENDPOINT` + `OTEL_EXPORTER_OTLP_HEADERS` | nothing to write |
+| Hosting | `src.main:app` (plain ASGI) | Modal (`modal_app.py`, `modal_common.py`) | which entrypoint you run | `uvicorn src.main:app`, then re-derive the stream numbers below |
+
+**Identity provider (Auth0, Cognito, Clerk, Keycloak, Supabase Auth, ...)**: set `AUTH_BACKEND=jwks`, `JWT_JWKS_URL`, `JWT_ALGORITHM=RS256` (or `ES256`), `JWT_AUDIENCE`, `JWT_ISSUER` and `WS_TICKET_SECRET` (WebSocket tickets are issued by this service, so they never depend on the provider). If your provider puts scopes in a differently named claim, set `JWT_SCOPES_CLAIM`; the OAuth2 `scope` string (`"a b c"`) works without it. Keys are cached and re-fetched when a token names an unknown `kid`, at most once per 30 s (PyJWT's cooldown against forged key ids), so rotation needs no redeploy. Without `JWT_AUDIENCE` a token your provider issued for *any* app is accepted; startup warns about it.
+
+**Database connections**: `DATABASE_MODE=direct` turns the prepared-statement cache back on (one wire round trip per query, about half the latency) and lets `LISTEN` reuse `DATABASE_URL`. Only use it when `max_containers × (pool + 1)` fits the database's real connection limit; set `database_connection_limit` on the `EnvConfig` preset and the config refuses a scale-out that would not.
+
+**Moving off Modal**: the application code has no Modal imports. What is Modal-specific is tuning: `STREAM_HEARTBEAT_SECONDS` (5 s) and `STREAM_MAX_CONNECTIONS` exist because Modal's proxy does not report client disconnects, and `STREAM_MAX_DURATION_SECONDS` sits under Modal's 150 s request limit. A platform that reports disconnects and has longer timeouts can raise all three. Set `APP_ENV` and `INSTANCE_ID` instead of `MODAL_ENV` / `MODAL_TASK_ID`.
+
+The shared rate limiter (`RATE_LIMIT_BACKEND=postgres`) is a fixed-window counter: one database round trip per check, no burst allowance, and it fails open if the database is unreachable. Keep the per-container limiter for abuse protection; use the shared one when the limit is a real quota.
 
 ### Add a new service
 
@@ -451,7 +474,7 @@ Replace `["*"]` with your real origins before production (`prod` logs a warning 
 Documented, not hidden:
 
 - **CORS is `*` in every preset** until you set your origins.
-- **Rate limits and the stream cap are per container** — with N containers the effective limit is up to N×. Enforce hard global quotas at the edge.
+- **Rate limits and the stream cap are per container by default** — with N containers the effective limit is up to N×. Set `RATE_LIMIT_BACKEND=postgres` for a limit shared by every container (costs one database round trip per check), or enforce hard global quotas at the edge. The stream cap is always per container.
 - **Event publishing is serialised** by a database-wide lock (≈ 4,800/s next to the database, 47–191/s at a 30 ms round trip). Use a broker (Redis Streams, NATS, Kafka) for very high volume.
 - **Auth is HS256-family only**, with no token issuing or secret-rotation procedure; stream authorisation defaults to "every subscriber sees every event on a topic they may read" (override `can_view`).
 - **Migrations are forward-only and transactional** — no `CREATE INDEX CONCURRENTLY`; run those by hand.
