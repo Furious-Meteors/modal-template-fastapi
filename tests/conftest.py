@@ -224,7 +224,7 @@ BACKENDS = [
 async def wipe_database(pool):
     """Drop everything the app (and its migrations) create, including migration bookkeeping."""
     await pool.execute(
-        "DROP TABLE IF EXISTS items, events, webhook_events, ws_ticket_uses, schema_migrations CASCADE; "
+        "DROP TABLE IF EXISTS items, events, webhook_events, ws_ticket_uses, rate_limits, schema_migrations CASCADE; "
         "DROP FUNCTION IF EXISTS publish_event(text, text, jsonb)"
     )
 

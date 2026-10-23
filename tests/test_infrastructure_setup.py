@@ -365,3 +365,75 @@ def test_rejected_exports_are_logged_with_the_reason_but_never_the_credentials(c
     text = caplog.text
     assert "429" in text and "retry_after=6" in text and "err-mimir-tenant-max-request-rate" in text
     assert "c2VjcmV0" not in text and "Authorization" not in text
+
+
+# ── vendor-neutral exporter auth ────────────────────────────────────────────
+
+def test_standard_otlp_headers_take_over_from_the_grafana_shortcut(monkeypatch):
+    from src.infrastructure.setup import _exporter_headers
+
+    monkeypatch.setenv("GRAFANA_INSTANCE_ID", "123")
+    monkeypatch.setenv("GRAFANA_OTLP_TOKEN", "tok")
+    assert _exporter_headers()["Authorization"].startswith("Basic ")  # the Grafana shortcut
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-api-key=abc")
+    assert _exporter_headers() is None  # None -> the SDK reads OTEL_EXPORTER_OTLP_HEADERS itself
+
+
+def test_exporters_send_the_standard_headers_variable(monkeypatch):
+    import http.server
+    import threading
+
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    seen = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen["key"] = self.headers.get("x-api-key")
+            self.rfile.read(int(self.headers.get("content-length", 0)))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-api-key=abc")
+        reader = InMemoryMetricReader()
+        MeterProvider(metric_readers=[reader]).get_meter("t").create_counter("c").add(1)
+        exporter = OTLPMetricExporter(endpoint=f"http://127.0.0.1:{server.server_port}/v1/metrics", headers=None)
+        exporter.export(reader.get_metrics_data(), timeout_millis=5000)
+    finally:
+        server.shutdown()
+    assert seen["key"] == "abc"
+
+
+def test_environment_and_instance_names_work_on_any_host(monkeypatch):
+    from src.infrastructure.setup import _instance_id
+    from src.utils.config import app_env
+
+    for name in ("APP_ENV", "MODAL_ENV", "INSTANCE_ID", "MODAL_TASK_ID"):
+        monkeypatch.delenv(name, raising=False)
+    assert app_env() == "dev"
+    monkeypatch.setenv("MODAL_ENV", "feat")
+    assert app_env() == "feat"
+    monkeypatch.setenv("APP_ENV", "prod")  # the neutral name wins
+    assert app_env() == "prod"
+    monkeypatch.setenv("MODAL_TASK_ID", "ta-1")
+    assert _instance_id() == "ta-1"
+    monkeypatch.setenv("INSTANCE_ID", "pod-7")
+    assert _instance_id() == "pod-7"
+
+
+def test_prod_safety_follows_the_neutral_environment_name(monkeypatch):
+    from src import deps
+
+    monkeypatch.delenv("MODAL_ENV", raising=False)
+    monkeypatch.delenv("ALLOW_MEMORY_IN_PROD", raising=False)
+    monkeypatch.setenv("APP_ENV", "prod")
+    with pytest.raises(RuntimeError, match="Refusing to start in prod"):
+        deps._refuse_memory_in_prod("memory", "memory")

@@ -19,3 +19,11 @@ class DuplicateItemNameError(Exception):
     def __init__(self, name: str) -> None:
         super().__init__(f"An item named '{name}' already exists")
         self.name = name
+
+
+class TokenExpiredError(Exception):
+    """The bearer token was valid but has expired."""
+
+
+class InvalidTokenError(Exception):
+    """The bearer token is malformed, badly signed, or fails an audience/issuer/claim check."""

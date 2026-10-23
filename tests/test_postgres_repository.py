@@ -176,6 +176,59 @@ async def test_pool_disables_the_prepared_statement_cache(monkeypatch):
         return object()
 
     monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+    monkeypatch.delenv("DATABASE_MODE", raising=False)  # the default is the safe, pooler-compatible mode
     await postgres.create_pool("postgresql://u:p@db.example.com:6543/postgres")
     assert captured["statement_cache_size"] == 0
     assert captured["ssl"] == "require"
+
+
+# ── DATABASE_MODE: pooler vs direct ─────────────────────────────────────────
+
+async def _captured_pool_kwargs(monkeypatch, mode):
+    import asyncpg
+
+    from src.adapters.persistence import postgres
+
+    captured: dict = {}
+
+    async def fake_create_pool(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(asyncpg, "create_pool", fake_create_pool)
+    if mode is None:
+        monkeypatch.delenv("DATABASE_MODE", raising=False)
+    else:
+        monkeypatch.setenv("DATABASE_MODE", mode)
+    await postgres.create_pool("postgresql://u:p@db.example.com:5432/postgres")
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_direct_mode_keeps_the_prepared_statement_cache_on(monkeypatch):
+    assert "statement_cache_size" not in await _captured_pool_kwargs(monkeypatch, "direct")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [None, "pooler", " POOLER "])
+async def test_pooler_is_the_safe_default(monkeypatch, mode):
+    assert (await _captured_pool_kwargs(monkeypatch, mode))["statement_cache_size"] == 0
+
+
+@pytest.mark.asyncio
+async def test_unknown_database_mode_fails_loudly(monkeypatch):
+    with pytest.raises(RuntimeError, match="DATABASE_MODE"):
+        await _captured_pool_kwargs(monkeypatch, "sideways")
+
+
+def test_listen_uses_the_main_url_only_in_direct_mode(monkeypatch):
+    from src import deps
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://main")
+    monkeypatch.delenv("EVENT_BUS_LISTEN_URL", raising=False)
+    monkeypatch.setenv("DATABASE_MODE", "pooler")
+    assert deps._listen_dsn() is None
+    monkeypatch.setenv("DATABASE_MODE", "direct")
+    assert deps._listen_dsn() == "postgresql://main"
+    monkeypatch.setenv("EVENT_BUS_LISTEN_URL", "postgresql://listen")
+    assert deps._listen_dsn() == "postgresql://listen"

@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 import uuid
@@ -7,14 +8,19 @@ from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError
 
+from src.adapters.auth.jwt import SYMMETRIC_ALGORITHMS, ASYMMETRIC_ALGORITHMS
 from src.api.errors import AppError
 from src.api.models import TokenPayload
+from src.core.domain.errors import InvalidTokenError, TokenExpiredError
+from src.deps import auth_backend, get_token_verifier
 from src.utils.config import WS_TICKET_TTL_SECONDS
+
+logger = logging.getLogger(__name__)
 
 _bearer = HTTPBearer(auto_error=False)
 
 MIN_SECRET_LENGTH = 32
-ALLOWED_ALGORITHMS = frozenset({"HS256", "HS384", "HS512"})
+ALLOWED_ALGORITHMS = SYMMETRIC_ALGORITHMS  # shared-secret mode; JWKS mode takes ASYMMETRIC_ALGORITHMS
 
 
 def _get_secret_key() -> str:
@@ -28,36 +34,79 @@ def _get_algorithm() -> str:
     return os.environ.get("JWT_ALGORITHM", "HS256")
 
 
+def _ticket_secret() -> str:
+    """
+    Key that signs and checks WebSocket tickets. Tickets are issued and consumed by this
+    service, so they never depend on the identity provider: with AUTH_BACKEND=jwks set
+    WS_TICKET_SECRET; with a shared secret it defaults to JWT_SECRET.
+    """
+    key = os.environ.get("WS_TICKET_SECRET") or os.environ.get("JWT_SECRET")
+    if not key:
+        raise RuntimeError("WS_TICKET_SECRET (or JWT_SECRET) must be set to sign WebSocket tickets")
+    return key
+
+
+def _ticket_algorithm() -> str:
+    algorithm = _get_algorithm()
+    return algorithm if algorithm in SYMMETRIC_ALGORITHMS else "HS256"
+
+
+def _check_secret(name: str, value: str) -> None:
+    if len(value) < MIN_SECRET_LENGTH:
+        raise RuntimeError(f"{name} must be at least {MIN_SECRET_LENGTH} characters long (got {len(value)})")
+
+
 def validate_auth_config() -> None:
     """
-    Fail-fast check for the JWT environment. Called from the app lifespan so a
-    missing or weak secret stops the container at startup instead of surfacing
-    as a 500 on the first authenticated request.
+    Fail-fast check for the auth environment. Called from the app lifespan so a missing or
+    weak secret stops the container at startup instead of surfacing as a 500 on the first
+    authenticated request.
     """
-    key = _get_secret_key()  # raises RuntimeError when missing/empty
-    algorithm = _get_algorithm()
-    if algorithm not in ALLOWED_ALGORITHMS:
-        raise RuntimeError(
-            f"JWT_ALGORITHM='{algorithm}' is not supported; "
-            f"use one of: {', '.join(sorted(ALLOWED_ALGORITHMS))}"
-        )
-    if len(key) < MIN_SECRET_LENGTH:
-        raise RuntimeError(
-            f"JWT_SECRET must be at least {MIN_SECRET_LENGTH} characters long "
-            f"(got {len(key)})"
-        )
+    backend = auth_backend()
+    if backend == "secret":
+        key = _get_secret_key()  # raises RuntimeError when missing/empty
+        algorithm = _get_algorithm()
+        if algorithm not in SYMMETRIC_ALGORITHMS:
+            raise RuntimeError(
+                f"JWT_ALGORITHM='{algorithm}' is not supported; "
+                f"use one of: {', '.join(sorted(SYMMETRIC_ALGORITHMS))}"
+            )
+        _check_secret("JWT_SECRET", key)
+    elif backend == "jwks":
+        url = os.environ.get("JWT_JWKS_URL", "")
+        if not url:
+            raise RuntimeError("AUTH_BACKEND=jwks requires JWT_JWKS_URL")
+        if not (url.startswith("https://") or url.startswith(("http://localhost", "http://127.0.0.1"))):
+            raise RuntimeError("JWT_JWKS_URL must be an https:// URL (http is allowed only for localhost)")
+        bad = [a for a in os.environ.get("JWT_ALGORITHM", "RS256").split(",") if a.strip() not in ASYMMETRIC_ALGORITHMS]
+        if bad:
+            raise RuntimeError(
+                f"JWT_ALGORITHM={bad} is not supported with AUTH_BACKEND=jwks; "
+                f"use one or more of: {', '.join(sorted(ASYMMETRIC_ALGORITHMS))}"
+            )
+        _check_secret("WS_TICKET_SECRET", os.environ.get("WS_TICKET_SECRET", ""))
+        if not os.environ.get("JWT_AUDIENCE"):
+            logger.warning(
+                "AUTH_BACKEND=jwks without JWT_AUDIENCE: any token your identity provider issues "
+                "for ANY application will be accepted. Set JWT_AUDIENCE (and JWT_ISSUER)."
+            )
+    get_token_verifier()  # unknown backend / missing variables fail here, at boot
 
 
-def _decode_options() -> dict:
-    """Extra kwargs for jwt.decode: audience/issuer are enforced only when configured."""
-    kwargs: dict = {}
-    audience = os.environ.get("JWT_AUDIENCE")
-    issuer = os.environ.get("JWT_ISSUER")
-    if audience:
-        kwargs["audience"] = audience
-    if issuer:
-        kwargs["issuer"] = issuer
-    return kwargs
+def _scopes(claims: dict):
+    """
+    Scopes from the claim named by JWT_SCOPES_CLAIM (default "scopes"), falling back to the
+    OAuth2-standard space-delimited "scope" claim when that one is absent, so tokens from most
+    identity providers work without a custom claims mapper. The default claim must be a JSON
+    list; a custom claim may also be a space-delimited string. Anything malformed is returned
+    as-is and rejected by TokenPayload validation.
+    """
+    configured = os.environ.get("JWT_SCOPES_CLAIM", "scopes")
+    if configured in claims:
+        value = claims[configured]
+        return value.split() if isinstance(value, str) and configured != "scopes" else value
+    scope = claims.get("scope")
+    return scope.split() if isinstance(scope, str) else []
 
 
 _BEARER_HEADERS = {"WWW-Authenticate": "Bearer"}
@@ -68,19 +117,13 @@ def _unauthorized(error_code: str, message: str) -> AppError:
 
 
 def verify_token(token: str) -> TokenPayload:
-    """Decode and validate a JWT into a TokenPayload. Raises HTTP 401 on any failure."""
+    """Verify a bearer token with the active TokenVerifier. Raises HTTP 401 on any failure."""
     try:
-        claims = jwt.decode(
-            token,
-            _get_secret_key(),
-            algorithms=[_get_algorithm()],
-            options={"require": ["exp", "sub"]},
-            **_decode_options(),
-        )
-        return TokenPayload.model_validate(claims)
-    except jwt.ExpiredSignatureError:
+        claims = get_token_verifier().verify(token)
+        return TokenPayload.model_validate({**claims, "scopes": _scopes(claims)})
+    except TokenExpiredError:
         raise _unauthorized("TOKEN_EXPIRED", "Token has expired")
-    except (jwt.InvalidTokenError, ValidationError):
+    except (InvalidTokenError, ValidationError):
         raise _unauthorized("INVALID_TOKEN", "Invalid token")
 
 
@@ -151,7 +194,7 @@ def create_ws_ticket(user: TokenPayload) -> tuple[str, int]:
     issuer = os.environ.get("JWT_ISSUER")
     if issuer:
         claims["iss"] = issuer
-    ticket = jwt.encode(claims, _get_secret_key(), algorithm=_get_algorithm())
+    ticket = jwt.encode(claims, _ticket_secret(), algorithm=_ticket_algorithm())
     return ticket, WS_TICKET_TTL_SECONDS
 
 
@@ -168,8 +211,8 @@ def verify_ws_ticket(ticket: str) -> tuple[TokenPayload, str]:
     try:
         claims = jwt.decode(
             ticket,
-            _get_secret_key(),
-            algorithms=[_get_algorithm()],
+            _ticket_secret(),
+            algorithms=[_ticket_algorithm()],
             options={"require": ["exp", "sub", "jti"]},
             **kwargs,
         )

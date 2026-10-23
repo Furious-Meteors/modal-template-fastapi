@@ -21,7 +21,12 @@ statement_cache_size=0. Modern PgBouncer tolerates the cache, so this costs a
 little speed there and is required elsewhere. tests/test_postgres_repository.py
 guards the setting.
 
-Env vars: DATABASE_URL (required), DATABASE_SSL ("require" default for remote
+DATABASE_MODE selects how the URL is reached: "pooler" (default; transaction pooler, statement
+cache off) or "direct" (a direct or session-level connection: asyncpg's prepared-statement cache
+stays on, so each parameterised query is ONE wire round trip instead of two, and LISTEN can use
+the same URL). Use direct when the number of connections you need is within the database's limit.
+
+Env vars: DATABASE_URL (required), DATABASE_MODE ("pooler" | "direct"), DATABASE_SSL ("require" default for remote
 hosts, "disable" to turn off), DB_POOL_MIN_SIZE (1), DB_POOL_MAX_SIZE (5),
 DB_COMMAND_TIMEOUT_SECONDS (10). Keep DB_POOL_MAX_SIZE >= the per-container
 concurrency (max_concurrent_requests) so requests do not queue on the pool.
@@ -69,6 +74,13 @@ def _ssl_setting(dsn: str) -> Optional[str]:
     return None if (parts.hostname or "") in _LOCAL_HOSTS else "require"
 
 
+def database_mode() -> str:
+    mode = os.environ.get("DATABASE_MODE", "pooler").strip().lower() or "pooler"
+    if mode not in ("pooler", "direct"):
+        raise RuntimeError(f"DATABASE_MODE must be 'pooler' or 'direct' (got {mode!r})")
+    return mode
+
+
 async def create_pool(dsn: str) -> asyncpg.Pool:
     max_size = _int_env("DB_POOL_MAX_SIZE", 5)
     min_size = min(_int_env("DB_POOL_MIN_SIZE", 1), max_size)
@@ -77,8 +89,9 @@ async def create_pool(dsn: str) -> asyncpg.Pool:
         min_size=min_size,
         max_size=max_size,
         command_timeout=_int_env("DB_COMMAND_TIMEOUT_SECONDS", 10),
-        statement_cache_size=0,  # safe behind any transaction-mode pooler (Supavisor)
     )
+    if database_mode() == "pooler":
+        kwargs["statement_cache_size"] = 0  # safe behind any transaction-mode pooler (Supavisor)
     ssl = _ssl_setting(dsn)
     if ssl:
         kwargs["ssl"] = ssl

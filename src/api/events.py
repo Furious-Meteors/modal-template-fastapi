@@ -143,7 +143,7 @@ async def stream_events(
 async def issue_ws_ticket(
     current_user: TokenPayload = Depends(require_scope("events:read")),
 ):
-    wait = ratelimit.ticket_limiter.check(current_user.sub)  # per user, never per IP
+    wait = await ratelimit.ticket_limiter.acquire(current_user.sub)  # per user, never per IP
     if wait:
         raise AppError(
             429, "RATE_LIMITED", "Too many ticket requests; slow down",

@@ -5,10 +5,13 @@ OpenTelemetry SDK bootstrap. Call setup_telemetry() once inside
 the Modal @enter hook — never at module import time.
 
 This file is owned by the template. Do not edit it per-service.
-Per-service configuration lives entirely in two env vars:
+Per-service configuration lives entirely in environment variables, and works with any
+OTLP/HTTP backend (Grafana, Datadog, Honeycomb, a self-hosted collector, ...):
   OTEL_SERVICE_NAME            e.g. "modal-fastapi" / "ai-research-vault"
-  OTEL_EXPORTER_OTLP_ENDPOINT  Grafana Cloud OTLP endpoint URL
-  GRAFANA_OTLP_TOKEN           Grafana Cloud API token (via Modal Secret)
+  OTEL_EXPORTER_OTLP_ENDPOINT  the backend's OTLP base URL
+  OTEL_EXPORTER_OTLP_HEADERS   auth, "key=value,key2=value2" (the standard variable)
+  GRAFANA_INSTANCE_ID + GRAFANA_OTLP_TOKEN
+                               Grafana Cloud shortcut for the above (Basic auth)
 """
 
 from __future__ import annotations
@@ -28,6 +31,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+from src.utils.config import app_env
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +69,7 @@ def _instance_id() -> str:
     in the backend and look like constant counter resets. Grafana turns this into
     the `instance` label.
     """
-    return os.environ.get("MODAL_TASK_ID") or socket.gethostname() or uuid.uuid4().hex
+    return os.environ.get("INSTANCE_ID") or os.environ.get("MODAL_TASK_ID") or socket.gethostname() or uuid.uuid4().hex
 
 
 def _build_resource() -> Resource:
@@ -72,7 +77,7 @@ def _build_resource() -> Resource:
         "service.name":            os.environ.get("OTEL_SERVICE_NAME", "modal-fastapi"),
         "service.version":         os.environ.get("OTEL_SERVICE_VERSION", "1.0.0"),
         "service.instance.id":     _instance_id(),
-        "deployment.environment":  os.environ.get("MODAL_ENV", "dev"),
+        "deployment.environment":  app_env(),
     })
 
 
@@ -91,6 +96,17 @@ def _grafana_headers() -> dict[str, str]:
     return {"Authorization": f"Basic {creds}"}
 
 
+def _exporter_headers() -> dict[str, str] | None:
+    """
+    Auth headers for the OTLP endpoint, for any backend. Set the standard
+    OTEL_EXPORTER_OTLP_HEADERS ("key=value,key2=value2") and the SDK applies it itself (we
+    return None). Otherwise the Grafana Cloud convenience variables are used.
+    """
+    if os.environ.get("OTEL_EXPORTER_OTLP_HEADERS"):
+        return None
+    return _grafana_headers()
+
+
 def setup_telemetry() -> None:
     """
     Idempotent SDK bootstrap. Safe to call in @enter — runs once per
@@ -105,7 +121,7 @@ def setup_telemetry() -> None:
 
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "")
     resource  = _build_resource()
-    headers   = _grafana_headers()
+    headers   = _exporter_headers()
 
     enabled = os.environ.get("TELEMETRY_ENABLED", "true").strip().lower() != "false"
 
@@ -168,7 +184,7 @@ def setup_telemetry() -> None:
         "OpenTelemetry initialised → %s  service=%s  env=%s  instance=%s  metric_interval=%ss",
         endpoint,
         os.environ.get("OTEL_SERVICE_NAME", "modal-fastapi"),
-        os.environ.get("MODAL_ENV", "dev"),
+        app_env(),
         _instance_id(),
         int(os.environ.get("OTEL_METRIC_EXPORT_INTERVAL_MS", "15000")) // 1000,
     )

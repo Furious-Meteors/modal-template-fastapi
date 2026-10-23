@@ -30,9 +30,16 @@ def write(directory: Path, name: str, sql: str) -> Path:
 
 @pytest.fixture
 def shipped_copy(tmp_path):
-    """A writable copy of the shipped migrations, to extend with new ones."""
+    """
+    A writable copy of the first BASELINE shipped migrations (and the repeatable scripts), to extend
+    with new ones. These tests are about the runner's mechanics and are written around that baseline,
+    so shipping another migration never breaks them.
+    """
     target = tmp_path / "sql"
-    shutil.copytree(SHIPPED, target)
+    shutil.copytree(
+        SHIPPED, target,
+        ignore=lambda _dir, names: [n for n in names if n[:3].isdigit() and int(n[:3]) > BASELINE],
+    )
     return target
 
 
@@ -105,6 +112,10 @@ async def db():
     await pool.close()
 
 
+BASELINE = 3
+NAMES = sorted(p.name for p in SHIPPED.glob("[0-9]*.sql"))  # every shipped versioned migration, in order
+
+
 async def applied_versions(pool):
     return [r["version"] for r in await pool.fetch("SELECT version FROM schema_migrations ORDER BY version")]
 
@@ -113,10 +124,10 @@ async def applied_versions(pool):
 @pytest.mark.asyncio
 async def test_a_fresh_database_gets_everything_in_order_and_it_is_recorded(db):
     report = await mig.run_migrations(db)
-    assert report.applied == ["001_create_items.sql", "002_streaming_state.sql", "003_publish_event.sql"]
+    assert report.applied == NAMES
     assert report.repeatable == ["R__publish_event_lockdown.sql"]
-    assert await applied_versions(db) == [1, 2, 3]
-    for table in ("items", "events", "webhook_events", "ws_ticket_uses", "schema_migrations"):
+    assert await applied_versions(db) == list(range(1, len(NAMES) + 1))
+    for table in ("items", "events", "webhook_events", "ws_ticket_uses", "rate_limits", "schema_migrations"):
         assert await db.fetchval("SELECT to_regclass($1) IS NOT NULL", table), table
     assert (await db.fetchrow("SELECT out_seq FROM publish_event('t', 'e', '{}')"))["out_seq"] > 0
     assert await db.fetchval("SELECT relrowsecurity FROM pg_class WHERE relname = 'schema_migrations'") is True
@@ -130,7 +141,7 @@ async def test_running_again_changes_nothing(db):
     await mig.run_migrations(db)
     before = await db.fetch("SELECT version, applied_at FROM schema_migrations ORDER BY version")
     report = await mig.run_migrations(db)
-    assert report.applied == [] and report.already_applied == 3 and report.warnings == []
+    assert report.applied == [] and report.already_applied == len(NAMES) and report.warnings == []
     assert await db.fetch("SELECT version, applied_at FROM schema_migrations ORDER BY version") == before
 
 
@@ -145,7 +156,7 @@ async def test_an_existing_database_from_the_old_scheme_is_adopted_without_touch
     assert not await db.fetchval("SELECT to_regclass('schema_migrations') IS NOT NULL")
 
     report = await mig.run_migrations(db)
-    assert report.applied == ["001_create_items.sql", "002_streaming_state.sql", "003_publish_event.sql"]
+    assert report.applied == NAMES  # the old scheme's three are adopted; anything newer genuinely runs
     assert sorted(r["name"] for r in await db.fetch("SELECT name FROM items")) == ["And Me", "Keep Me"]
     assert await db.fetchval("SELECT count(*) FROM events") == 1
     assert all(r["state"] in ("applied", "repeatable") for r in await mig.status(db))
@@ -226,7 +237,7 @@ async def test_a_database_newer_than_the_code_is_tolerated_so_rollbacks_are_not_
         report = await mig.run_migrations(db)
     assert report.applied == [] and any("does not know (99)" in w for w in report.warnings)
     assert any("does not know (99)" in r.getMessage() for r in caplog.records)
-    assert await applied_versions(db) == [1, 2, 3, 99]  # never deleted
+    assert await applied_versions(db) == [*range(1, len(NAMES) + 1), 99]  # never deleted
     assert {r["version"]: r["state"] for r in await mig.status(db)}[99] == "unknown"
 
 
@@ -371,14 +382,14 @@ def _cli(*args, env_extra=None):
 @pg
 def test_cli_status_check_gates_ci_and_up_applies(db):
     pending = _cli("status", "--check")
-    assert pending.returncode == 1 and "PENDING" in pending.stdout and "0 applied, 3 pending" in pending.stdout
+    assert pending.returncode == 1 and "PENDING" in pending.stdout and f"0 applied, {len(NAMES)} pending" in pending.stdout
     assert _cli("status").returncode == 0  # without --check it only reports
     up = _cli("up")
     assert up.returncode == 0 and "001_create_items.sql" in up.stdout and "re-ran repeatable" in up.stdout
     done = _cli("status", "--check")
-    assert done.returncode == 0 and "3 applied, 0 pending, 0 changed" in done.stdout
+    assert done.returncode == 0 and f"{len(NAMES)} applied, 0 pending, 0 changed" in done.stdout
     again = _cli("up")
-    assert again.returncode == 0 and "nothing to apply (3 already applied)" in again.stdout
+    assert again.returncode == 0 and f"nothing to apply ({len(NAMES)} already applied)" in again.stdout
 
 
 def test_cli_explains_missing_or_broken_configuration_without_leaking_the_password():

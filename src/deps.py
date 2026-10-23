@@ -25,6 +25,7 @@ import os
 from functools import lru_cache
 
 from src.core.services.item_service import ItemService
+from src.utils.config import app_env
 from src.adapters.telemetry.metered import MeteredEventBus, MeteredItemService
 from src.adapters.telemetry.tracing_proxy import TracingProxy
 
@@ -52,12 +53,56 @@ _REQUIRED_EVENT_BUS_ENV: dict[str, list[str]] = {
 }
 
 
+# Auth backends — how bearer tokens are verified (src/core/ports/token_verifier.py).
+_REQUIRED_AUTH_ENV: dict[str, list[str]] = {
+    "secret": ["JWT_SECRET"],     # one shared HS* secret you control (default)
+    "jwks":   ["JWT_JWKS_URL"],   # an identity provider's published keys (RS*/ES*/PS*)
+}
+
+
+def auth_backend() -> str:
+    return os.environ.get("AUTH_BACKEND", "secret").strip().lower() or "secret"
+
+
 def _event_bus_backend() -> str:
     return os.environ.get("EVENT_BUS_BACKEND", "memory")
 
 
+# Rate-limit backends — endpoints with a request budget (ticket issuing, webhooks).
+_REQUIRED_RATE_LIMIT_ENV: dict[str, list[str]] = {
+    "memory":   [],                # per container (default)
+    "postgres": ["DATABASE_URL"],  # shared by every container
+}
+
+
+def _rate_limit_backend() -> str:
+    backend = os.environ.get("RATE_LIMIT_BACKEND", "memory").strip().lower() or "memory"
+    if backend not in _REQUIRED_RATE_LIMIT_ENV:
+        raise ValueError(
+            f"Unknown RATE_LIMIT_BACKEND='{backend}'. Known backends: {', '.join(_REQUIRED_RATE_LIMIT_ENV)}. "
+            f"Add an adapter in src/adapters/ratelimit/ and register it in _install_rate_limiters."
+        )
+    missing = [v for v in _REQUIRED_RATE_LIMIT_ENV[backend] if not os.environ.get(v)]
+    if missing:
+        raise EnvironmentError(f"RATE_LIMIT_BACKEND='{backend}' requires env vars that are not set: {', '.join(missing)}")
+    return backend
+
+
 def _needs_pool(persistence: str, event_bus: str) -> bool:
-    return persistence == "postgres" or event_bus == "postgres"
+    return persistence == "postgres" or event_bus == "postgres" or _rate_limit_backend() == "postgres"
+
+
+def _install_rate_limiters() -> None:
+    """Point the endpoints' limiters at the configured backend (memory is what api/ratelimit.py starts with)."""
+    from src.api import ratelimit
+    from src.utils.config import RATE_TICKET_PER_MINUTE, RATE_WEBHOOK_PER_MINUTE
+
+    if _rate_limit_backend() == "postgres":
+        from src.adapters.ratelimit.postgres import PostgresRateLimiter
+
+        pool = _require_pool("RATE_LIMIT_BACKEND=postgres")
+        ratelimit.ticket_limiter = TracingProxy(PostgresRateLimiter(pool, "ticket", RATE_TICKET_PER_MINUTE), prefix="rate_limiter")
+        ratelimit.webhook_limiter = TracingProxy(PostgresRateLimiter(pool, "webhook", RATE_WEBHOOK_PER_MINUTE), prefix="rate_limiter")
 
 
 def _validate_backend(backend: str) -> None:
@@ -101,6 +146,7 @@ async def init_resources() -> None:
         for cached in (_get_repository, _get_event_bus, _get_webhook_store, _get_ticket_store):
             cached.cache_clear()  # rebuild against the live pool
         logger.info("Postgres pool ready (max_size=%s)", _pool.get_max_size())
+    _install_rate_limiters()
     if bus_backend == "postgres":
         await _get_event_bus().start()  # begins the cross-container event pump
 
@@ -170,6 +216,16 @@ def _validate_event_bus_backend(backend: str) -> None:
         )
 
 
+def _listen_dsn():
+    """Where LISTEN connects: EVENT_BUS_LISTEN_URL, else DATABASE_URL when it is itself a direct/session connection."""
+    from src.adapters.persistence.postgres import database_mode
+
+    explicit = os.environ.get("EVENT_BUS_LISTEN_URL")
+    if explicit:
+        return explicit
+    return os.environ["DATABASE_URL"] if database_mode() == "direct" else None
+
+
 def _require_pool(what: str):
     if _pool is None:
         raise RuntimeError(
@@ -199,7 +255,7 @@ def _get_event_bus():
             _require_pool("EVENT_BUS_BACKEND=postgres"),
             # LISTEN needs a session-level connection (direct URL or session pooler);
             # unset = poll through the regular pool. See docs/persistence.md.
-            listen_dsn=os.environ.get("EVENT_BUS_LISTEN_URL") or None,
+            listen_dsn=_listen_dsn(),
             poll_interval=EVENT_BUS_POLL_MS / 1000,
             replay_size=EVENT_REPLAY_SIZE,
             retention_seconds=EVENT_RETENTION_SECONDS,
@@ -245,7 +301,7 @@ def _refuse_memory_in_prod(persistence: str, event_bus: str) -> None:
     In-memory storage is per container and lost on scale-down. In prod that silently
     loses data, so refuse to start — loudly, at boot — unless someone explicitly accepts it.
     """
-    if os.environ.get("MODAL_ENV") != "prod":
+    if app_env() != "prod":
         return
     if os.environ.get("ALLOW_MEMORY_IN_PROD", "").strip().lower() == "true":
         return
@@ -268,29 +324,55 @@ def init_dependencies() -> None:
     """
     backend = os.environ.get("PERSISTENCE_BACKEND", "memory")
     _refuse_memory_in_prod(backend, _event_bus_backend())
+    _rate_limit_backend()  # fail fast on an unknown backend or missing variables
     _get_repository()
     _get_event_bus()
     _get_webhook_store()
     _get_ticket_store()
-    if _event_bus_backend() == "memory" and os.environ.get("MODAL_ENV") == "prod":
+    if _event_bus_backend() == "memory" and app_env() == "prod":
         logger.warning(
             "EVENT_BUS_BACKEND=memory in prod: SSE/WebSocket streams only see events "
             "published on their own container, and webhook de-duplication and "
             "WebSocket ticket replay protection are per container. Set "
             "EVENT_BUS_BACKEND=postgres before scaling out."
         )
-    if _event_bus_backend() == "postgres" and not os.environ.get("EVENT_BUS_LISTEN_URL"):
+    if _event_bus_backend() == "postgres" and not _listen_dsn():
         logger.info(
             "EVENT_BUS_LISTEN_URL is not set: events are picked up by polling "
             "(latency up to EVENT_BUS_POLL_MS). Set it to a session-level Postgres "
             "URL for instant delivery."
         )
-    if backend == "memory" and os.environ.get("MODAL_ENV") == "prod":
+    if backend == "memory" and app_env() == "prod":
         logger.warning(
             "PERSISTENCE_BACKEND=memory in prod: each container keeps its own "
             "store, so data differs between containers and is lost on scale-down. "
             "Use a real persistence adapter."
         )
+
+
+def get_token_verifier():
+    """
+    The active TokenVerifier. Built from the environment on every call (it is a few attribute
+    assignments); the one expensive part, the JWKS key cache, is kept per URL by the adapter.
+    """
+    backend = auth_backend()
+    if backend not in _REQUIRED_AUTH_ENV:
+        raise ValueError(
+            f"Unknown AUTH_BACKEND='{backend}'. Known backends: {', '.join(_REQUIRED_AUTH_ENV)}. "
+            f"Add an adapter in src/adapters/auth/ and register it here."
+        )
+    missing = [v for v in _REQUIRED_AUTH_ENV[backend] if not os.environ.get(v)]
+    if missing:
+        raise RuntimeError(f"AUTH_BACKEND='{backend}' requires env vars that are not set: {', '.join(missing)}")
+    audience, issuer = os.environ.get("JWT_AUDIENCE"), os.environ.get("JWT_ISSUER")
+
+    if backend == "secret":
+        from src.adapters.auth.jwt import shared_secret_verifier
+        return shared_secret_verifier(os.environ["JWT_SECRET"], os.environ.get("JWT_ALGORITHM", "HS256"), audience, issuer)
+    # ── Add new backends here ───────────────────────────────────────────────
+    from src.adapters.auth.jwt import jwks_verifier
+    algorithms = [a.strip() for a in os.environ.get("JWT_ALGORITHM", "RS256").split(",") if a.strip()]
+    return jwks_verifier(os.environ["JWT_JWKS_URL"], algorithms, audience, issuer)
 
 
 def get_event_bus():

@@ -103,7 +103,7 @@ async def receive_webhook(
 
     # Per provider (never per IP): generous enough that real traffic never hits
     # it, and providers retry a 429. Checked before any body is read.
-    wait = ratelimit.webhook_limiter.check(provider)
+    wait = await ratelimit.webhook_limiter.acquire(provider)
     if wait:
         raise AppError(
             429, "RATE_LIMITED", "Too many webhook deliveries; retry shortly",

@@ -11,8 +11,16 @@ This file must never import from modal_common or modal.
 """
 import os
 
+def app_env() -> str:
+    """
+    Deployment environment name (dev / feat / prod ...). APP_ENV on any host; MODAL_ENV, which
+    Modal's deploy sets, is the fallback. Read at call time, so it follows the live environment.
+    """
+    return os.environ.get("APP_ENV") or os.environ.get("MODAL_ENV") or "dev"
+
+
 APP_NAME        = os.environ.get("APP_NAME", "modal-template-fastapi")
-APP_ENV         = os.environ.get("MODAL_ENV", "dev")
+APP_ENV         = app_env()
 APP_VERSION     = os.environ.get("APP_VERSION", "1.0.0")
 APP_DESCRIPTION = os.environ.get("APP_DESCRIPTION", "A FastAPI template deployed on Modal with CRUD endpoints.")
 SERVER_PREFIX   = os.environ.get("SERVER_PREFIX", "/api/v1")
@@ -62,7 +70,9 @@ EVENT_RETENTION_SECONDS = _positive_int("EVENT_RETENTION_SECONDS", 3600)
 EVENT_REPLAY_SIZE = _positive_int("EVENT_REPLAY_SIZE", 100)
 WEBHOOK_IDEMPOTENCY_TTL_SECONDS = _positive_int("WEBHOOK_IDEMPOTENCY_TTL_SECONDS", 86_400)
 
-# ── Rate limits (per container, in-memory token buckets) ────────────────────
+# ── Rate limits ─────────────────────────────────────────────────────────────
+# RATE_LIMIT_BACKEND=memory (default): per-container token buckets. =postgres: one
+# fixed-window counter shared by every container (needs DATABASE_URL).
 # Keys are chosen so a shared proxy IP can never lock out legitimate callers:
 # the ticket limit is per authenticated user, the webhook limit per provider
 # (generous — providers retry on 429), the message limit per connection.

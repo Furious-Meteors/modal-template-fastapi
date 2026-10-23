@@ -55,6 +55,10 @@ class TokenBucketLimiter:
             self._buckets.popitem(last=False)
         return allowed
 
+    async def acquire(self, key: str) -> float:
+        """RateLimiter port (src/core/ports/rate_limiter.py): same answer as check()."""
+        return self.check(key)
+
     @staticmethod
     def retry_after_header(wait_seconds: float) -> dict[str, str]:
         return {"Retry-After": str(max(1, math.ceil(wait_seconds)))}

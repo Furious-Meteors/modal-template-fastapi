@@ -251,3 +251,29 @@ def test_region_can_be_changed_or_left_to_modal_but_not_blank():
     assert "region" not in mc.build_fastapi_config(EnvConfig(env_name="dev", region=None))
     with pytest.raises(ValueError, match="region"):
         EnvConfig(env_name="dev", region="  ")
+
+
+# ── database mode and the connection budget ─────────────────────────────────
+
+def test_database_mode_defaults_to_the_safe_pooler_and_is_exported(monkeypatch):
+    import os
+
+    import modal_common as mc
+
+    assert EnvConfig(env_name="dev").database_mode == "pooler"
+    for key in ("DATABASE_MODE", "DB_POOL_MAX_SIZE"):
+        monkeypatch.setenv(key, "x")
+        monkeypatch.delenv(key)
+    mc.configure_env_vars(EnvConfig(env_name="dev", database_mode="direct", db_pool_size=8))
+    assert os.environ["DATABASE_MODE"] == "direct" and os.environ["DB_POOL_MAX_SIZE"] == "8"
+    with pytest.raises(ValueError, match="database_mode"):
+        EnvConfig(env_name="dev", database_mode="sideways")
+
+
+def test_a_scale_out_that_would_exhaust_the_database_is_refused_at_config_time():
+    # 5 containers x (5 + 1) = 30 connections
+    EnvConfig(env_name="dev", max_containers=5, database_connection_limit=30)
+    with pytest.raises(ValueError, match="30 connections, over database_connection_limit"):
+        EnvConfig(env_name="dev", max_containers=5, database_connection_limit=29)
+    with pytest.raises(ValueError, match="db_pool_size"):
+        EnvConfig(env_name="dev", db_pool_size=0)
