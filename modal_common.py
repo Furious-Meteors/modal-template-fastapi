@@ -20,6 +20,7 @@ PIP_PACKAGES: List[str] = [
     "websockets==17.2",
     "pydantic==2.14.1",
     "PyJWT==2.15.1",
+    "cryptography==50.0.2",  # RS*/ES* verification for AUTH_BACKEND=jwks
     "asyncpg==0.32.0",  # Postgres/Supabase persistence adapter
     # OpenTelemetry — OTLP/HTTP push to Grafana Cloud (or any OTLP-compatible backend)
     "opentelemetry-sdk==1.45.1",
@@ -99,6 +100,16 @@ class EnvConfig:
     # with a database). Modal may charge a premium for pinned regions.
     region: Optional[str] = "us-east"
 
+    # DATABASE — "pooler" for a transaction pooler such as Supabase's :6543 (statement cache
+    # off: two wire round trips per parameterised query) or "direct" for a direct/session
+    # connection (cache on: one round trip, about half the latency, but each container then
+    # holds real server connections). db_pool_size is per container; with a known
+    # database_connection_limit, max_containers x (db_pool_size + 1 for LISTEN) must fit under
+    # it (validated in __post_init__) — the check that stops a scale-out exhausting the database.
+    database_mode: str = "pooler"
+    db_pool_size: int = 5
+    database_connection_limit: Optional[int] = None
+
     # STREAMING — each open SSE/WebSocket connection holds one concurrent-request
     # slot for its whole life. Cap them below max_concurrent_requests so streams
     # can never starve normal requests (validated in __post_init__).
@@ -141,6 +152,18 @@ class EnvConfig:
     metric_export_interval_seconds: int = 60
 
     def __post_init__(self) -> None:
+        if self.database_mode not in ("pooler", "direct"):
+            raise ValueError(f"database_mode must be 'pooler' or 'direct' (got {self.database_mode!r})")
+        if self.db_pool_size < 1:
+            raise ValueError(f"db_pool_size must be >= 1 (got {self.db_pool_size})")
+        if self.database_connection_limit is not None and self.max_containers is not None:
+            needed = self.max_containers * (self.db_pool_size + 1)
+            if needed > self.database_connection_limit:
+                raise ValueError(
+                    f"max_containers ({self.max_containers}) x (db_pool_size {self.db_pool_size} + 1 LISTEN) = "
+                    f"{needed} connections, over database_connection_limit ({self.database_connection_limit}); "
+                    "lower max_containers or db_pool_size, or raise the limit"
+                )
         if self.region is not None and not self.region.strip():
             raise ValueError("region must be a Modal region such as 'us-east', or None")
         if self.max_containers is not None and self.max_containers < 1:
@@ -256,6 +279,9 @@ def configure_env_vars(env: EnvConfig) -> None:
     os.environ.setdefault("APP_DESCRIPTION", env.app_description)
     os.environ.setdefault("SERVER_PREFIX", env.server_prefix)
     os.environ.setdefault("CORS_ORIGINS", ",".join(env.cors_origins))
+    # Database — read by src/adapters/persistence/postgres.py
+    os.environ.setdefault("DATABASE_MODE", env.database_mode)
+    os.environ.setdefault("DB_POOL_MAX_SIZE", str(env.db_pool_size))
     # Streaming limits — read by src/utils/config.py
     os.environ.setdefault("STREAM_MAX_CONNECTIONS", str(env.max_streams))
     os.environ.setdefault("STREAM_HEARTBEAT_SECONDS", str(env.stream_heartbeat_seconds))
