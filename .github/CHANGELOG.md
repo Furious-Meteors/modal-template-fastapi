@@ -11,6 +11,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added (swappable layers)
+- **Authentication is a port** (`TokenVerifier`, `src/adapters/auth/jwt.py`). `AUTH_BACKEND=secret` (default, unchanged) or `jwks`: verify RS*/ES*/PS* tokens against an identity provider's published keys (`JWT_JWKS_URL`), with key caching, `kid`-based rotation (PyJWT refetches on an unknown key id, at most every 30 s), audience/issuer enforcement, and the OAuth2 space-delimited `scope` claim (or any claim via `JWT_SCOPES_CLAIM`). Startup validates the configuration and warns when `JWT_AUDIENCE` is unset. WebSocket tickets are signed with `WS_TICKET_SECRET` (default `JWT_SECRET`) so they never depend on the provider. Adds `cryptography` to the pinned image
+- **Rate limiting is a port** (`RateLimiter`). `RATE_LIMIT_BACKEND=memory` (default, per container) or `postgres`: one fixed-window counter shared by every container (migration `004_rate_limits.sql`), fail-open if the database is unreachable. WebSocket per-message limits stay per connection
+- **`DATABASE_MODE=pooler|direct`**: `direct` keeps asyncpg's prepared-statement cache on (one wire round trip per query instead of two) and lets `LISTEN` reuse `DATABASE_URL`. `EnvConfig` gained `database_mode`, `db_pool_size` and `database_connection_limit`, and refuses a `max_containers` that would exhaust the limit
+- Vendor-neutral telemetry: the standard `OTEL_EXPORTER_OTLP_HEADERS` is honoured (Grafana's `GRAFANA_INSTANCE_ID` + `GRAFANA_OTLP_TOKEN` remain a shortcut). `APP_ENV` / `INSTANCE_ID` work on any host, with `MODAL_ENV` / `MODAL_TASK_ID` as fallbacks
+- README "Swapping a layer": which port, adapter, variable and test to touch for each layer
+- Containers are pinned to a configurable `region` (default `us-east`) next to the database
+
+### Changed
+- `tests/test_migrations.py` runner tests use a fixed three-migration baseline and derive the shipped list, so adding a migration no longer breaks them
+
 ### Added (schema migrations)
 - Versioned migrations (`src/adapters/persistence/migrations.py`): `NNN_name.sql` applied once in numeric order and recorded in `schema_migrations` with a sha256; `R__name.sql` repeatable scripts re-run every start. The whole batch runs in one transaction under an advisory lock (same key as before, so old and new containers serialise during a rolling deploy): concurrent starts apply each migration exactly once, and a failing migration rolls the batch back. Editing an applied migration is refused (drift); a database newer than the code is tolerated with a warning so rollbacks work; existing databases are adopted without touching their data
 - Previously the schema was re-run from `IF NOT EXISTS` scripts on every start, which could create tables but never change one

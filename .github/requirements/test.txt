@@ -3,6 +3,7 @@ uvicorn[standard]==0.54.0
 websockets==17.2
 pydantic==2.14.1
 PyJWT==2.15.1
+cryptography==50.0.2
 asyncpg==0.32.0
 httpx
 pytest>=7.4
